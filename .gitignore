@@ -1,0 +1,27 @@
+# Build output
+/bin/
+/dist/
+pagent
+!cmd/pagent/
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Local runtime state
+/.pawagents/
+*.session.jsonl
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json
+*.swp
+
+# Local overrides
+config.local.yaml
+.env
+.env.*
