@@ -210,6 +210,10 @@ type ToolResult struct {
 	// IsError marks a failed call. The model is told the tool failed instead
 	// of being handed a plausible looking success.
 	IsError bool
+	// Truncated marks a result the runtime cut to fit the output budget. The
+	// model sees the truncation notice inside Content; this flag exists so
+	// that telemetry and the session record can report it precisely.
+	Truncated bool
 	// Metadata carries structured extras such as truncation flags. It is not
 	// sent to the model.
 	Metadata map[string]any

@@ -71,7 +71,7 @@ live in `tests/`.
 
 ## Conventions
 
-- Go 1.24+. Format with `gofmt -s`; run `go vet ./...` before committing.
+- Go 1.25+. Format with `gofmt -s`; run `go vet ./...` before committing.
 - Wrap errors with `apperrors.Wrap(kind, op, ...)`; pass the operation as
   `package.function`.
 - Configuration keys are snake_case and use the same name in YAML, JSON and the

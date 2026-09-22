@@ -40,7 +40,9 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | OpenAI-compatible provider (chat completions, streaming, tools) | Done |
 | Native Ollama provider with capability detection | Done |
 | `pagent provider list`, `pagent provider show`, `pagent provider test` | Done |
-| Repository and git tools, agent loop, `pagent run` | Next |
+| Workspace guard: traversal, symlink, blocked path and size enforcement | Done |
+| Read-only repository tools and git tools | Done |
+| Agent loop and `pagent run` | Next |
 | MCP server, Codex and Claude Code integration | Planned |
 
 **Not implemented yet** — do not expect these to work:
@@ -122,7 +124,7 @@ The six concepts PawAgents keeps strictly separate:
 
 ## Installation
 
-Requires Go 1.24 or newer.
+Requires Go 1.25 or newer.
 
 ```bash
 git clone https://github.com/pawagents/pawagents.git
@@ -399,14 +401,44 @@ roadmap feature that is accepted but not yet wired up.
 ## Security model
 
 - External subagents are **read-only by default**. `permissions.filesystem:
-  write` and `permissions.shell: allow` are rejected by validation.
-- Workspace escape is forbidden: `../` traversal, absolute paths outside the
-  workspace and symlink escapes are blocked at the tool boundary.
-- Secrets are never exposed to models. Credentials are read from the environment
-  at request time, environment variables are not visible to agents by default,
-  and log output redacts anything that looks like a credential.
+  write` and `permissions.shell: allow` are rejected by validation, and the
+  runtime refuses to build a tool grant that grants them.
+- **Workspace escape is structurally impossible.** Every filesystem access goes
+  through a single guard built on `os.Root`, the standard library sandbox: a
+  name that would resolve outside the workspace is refused, whether it escapes
+  through `..`, an absolute path or a symlink target. The workspace directory
+  itself is resolved first, so a workspace reached through a symlink (macOS
+  `/tmp`) behaves identically.
+- **Symlinks are not followed by default.** `security.follow_symlinks: true`
+  allows a symlink whose target stays inside the workspace. An absolute symlink
+  is never followed, even when it points inside; use a relative symlink.
+- **Blocked paths** (`security.blocked_paths`) are refused even inside the
+  workspace, for example `*/.env` or `**/*.pem`.
+- **Reads are bounded** by `security.max_file_size`, and tool results by the
+  agent budget, so no single call can fill the context window.
+- **No shell.** PawAgents never executes a command a model produced. The `git.*`
+  tools run a fixed git subcommand with a validated argument vector: a revision
+  is restricted to the characters git uses, a path is passed after `--`, and
+  nothing is ever interpolated into a shell.
+- **Secrets are never exposed to models.** Credentials are read from the
+  environment at request time, environment variables are invisible to agents
+  unless `security.allowed_env` names them *and* they do not look like a
+  credential, and log output redacts anything that does.
 - The host agent stays responsible for applying changes. PawAgents reports;
   Codex or Claude Code acts on the report.
+
+### Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `repo.read` | Read a file with line numbers, optionally a line range. |
+| `repo.list` | List a directory, optionally several levels deep. |
+| `repo.search` | Find text or a regular expression, returning `path:line: text`. |
+| `repo.stat` | Type, size, permissions, modification time and line count. |
+| `git.diff` | Unified diff of working tree, index or against a revision. |
+| `git.show` | One commit with its message and diff. |
+| `git.status` | Branch and every changed path. |
+| `git.log` | Recent commits, optionally following one path. |
 
 ---
 
@@ -443,10 +475,13 @@ internal/cli          command tree, flags, rendering
 internal/config       configuration schema, loading, defaults, validation
 internal/llm          vendor neutral protocol: messages, tools, events, usage
 internal/provider     provider interface, transport, registry, capabilities
-internal/provider/*   concrete providers (openaicompat, ...)
-internal/apperrors    error kinds, exit codes
-internal/logging      structured logging with redaction
+internal/provider/*   concrete providers (ollama, openaicompat, ...)
+internal/tools        tool runtime: registry, executor, argument decoding
+internal/tools/repo   repository readers (read, list, search, stat)
+internal/tools/git    git readers (diff, show, status, log)
 internal/security     workspace guard, permissions, secret handling
+internal/apperrors    error kinds and process exit codes
+internal/logging      structured logging with redaction
 internal/version      build metadata
 prompts               built-in agent system prompts (embedded in the binary)
 scripts               developer scripts
