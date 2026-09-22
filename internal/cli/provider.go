@@ -72,7 +72,7 @@ checked by a request.`,
 		},
 	}
 
-	cmd.AddCommand(newProviderListCmd(app), newProviderShowCmd(app))
+	cmd.AddCommand(newProviderListCmd(app), newProviderShowCmd(app), newProviderTestCmd(app))
 
 	return cmd
 }

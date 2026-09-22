@@ -38,15 +38,16 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | HTTP transport with TLS, proxy, credential and header handling | Done |
 | Provider registry with lazy construction | Done |
 | OpenAI-compatible provider (chat completions, streaming, tools) | Done |
-| `pagent provider list`, `pagent provider show` | Done |
-| Native Ollama provider, `pagent provider test` | Next |
-| Repository and git tools, agent loop, MCP server | Planned |
+| Native Ollama provider with capability detection | Done |
+| `pagent provider list`, `pagent provider show`, `pagent provider test` | Done |
+| Repository and git tools, agent loop, `pagent run` | Next |
+| MCP server, Codex and Claude Code integration | Planned |
 
 **Not implemented yet** — do not expect these to work:
 
-`pagent run`, `pagent doctor`, `pagent provider test`, `pagent model …`,
-`pagent agent …`, `pagent session …`, `pagent mcp serve`. They are described in
-the roadmap below, and each one is documented here as soon as it lands.
+`pagent run`, `pagent doctor`, `pagent model …`, `pagent agent …`,
+`pagent session …`, `pagent mcp serve`. They are described in the roadmap
+below, and each one is documented here as soon as it lands.
 
 ---
 
@@ -191,6 +192,7 @@ only runs a local model is never blocked.
 | `pagent config path` | Print the configuration path in use. |
 | `pagent provider list` | List the configured providers and whether this build can use them. |
 | `pagent provider show <name>` | Describe one provider, the models bound to it and the agents using those models. |
+| `pagent provider test <name>` | Check reachability, model installation and per-model capabilities. Exits 5 when a check fails. |
 
 Global flags:
 
@@ -288,8 +290,8 @@ this build, not the roadmap:
 
 | Type | Status |
 | --- | --- |
+| `ollama` | Implemented (native API, capability detection, tool calls) |
 | `openai-compatible` | Implemented (Chat Completions, streaming, tools) |
-| `ollama` | Known, not implemented yet (native provider, next phase) |
 | `openai-responses` | Known, not implemented yet |
 | `openai-chat` | Known, not implemented yet |
 | `anthropic` | Known, not implemented yet |
@@ -323,6 +325,68 @@ Supported knobs: `base_url`, `api_key`, `api_key_env`, `headers`,
 `client_cert_file`, `client_key_file`, `server_name`, `insecure_skip_verify`).
 `extra_body` is merged into every request body, so a vendor specific flag never
 needs a code change; a per-request `extra` wins over it.
+
+### Using Ollama
+
+Ollama is a first class provider. Install it, pull a model and point PawAgents
+at it — no cloud API key and no network access are required.
+
+```bash
+ollama pull qwen3-coder
+ollama list
+```
+
+```yaml
+providers:
+  local-ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    timeout: 120s
+
+models:
+  local-coder:
+    provider: local-ollama
+    model: qwen3-coder
+
+agents:
+  local-reviewer:
+    model: local-coder
+    prompt: ~/.pawagents/prompts/reviewer.md
+    tools:
+      - repo.read
+      - repo.search
+      - git.diff
+```
+
+Check the whole path before running anything:
+
+```bash
+pagent provider test local-ollama
+```
+
+```
+provider: local-ollama
+endpoint: http://127.0.0.1:11434
+
+Server
+  ✓ Ollama 0.12.3
+
+Installed models: 2
+
+Models
+  ✓ local-coder → qwen3-coder
+      tool_calling  streaming  structured_output  reasoning\
+  max_context_tokens=262144
+
+result: ✓ every check passed
+```
+
+Each check corresponds to a failure that would otherwise only appear at run
+time: the server is not running, the model was never pulled, or the model does
+not support tool calling while its agent grants tools. Capabilities are read
+from `/api/show`, so tool support is detected instead of assumed — a model that
+reports no `tools` capability produces a capability error rather than a silent
+degradation.
 
 **Validation severity.** Errors make a configuration unusable: an unknown
 provider type, a model pointing at a provider that does not exist, an agent

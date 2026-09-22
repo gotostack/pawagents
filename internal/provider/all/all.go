@@ -24,4 +24,8 @@ import (
 	// OpenAI-compatible chat completions: DeepSeek, DashScope, OpenRouter,
 	// LiteLLM, vLLM, company gateways and Ollama's compatibility endpoint.
 	_ "github.com/pawagents/pawagents/internal/provider/openaicompat"
+
+	// Native Ollama API with capability detection, reasoning output and
+	// token statistics.
+	_ "github.com/pawagents/pawagents/internal/provider/ollama"
 )

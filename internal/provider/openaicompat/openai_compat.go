@@ -141,7 +141,7 @@ func (p *Provider) Capabilities(ctx context.Context, model string) (llm.ModelCap
 		return capabilities, nil
 	}
 
-	if !matchesModel(models, model) {
+	if !provider.MatchModel(models, model) {
 		p.logger.Warn("the endpoint does not list the configured model; "+
 			"the request will still be attempted",
 			slog.String("provider", p.name),
@@ -672,27 +672,4 @@ func isUnsupportedStreamOptions(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(classified.Message), "stream_options")
-}
-
-// matchesModel reports whether the requested model is advertised. Exact
-// matches win; a listed identifier that starts with the requested name is
-// accepted as well, because endpoints list dated snapshots for a stable alias.
-func matchesModel(models []string, model string) bool {
-	if model == "" {
-		return true
-	}
-	normalized := strings.ToLower(strings.TrimSpace(model))
-	for _, candidate := range models {
-		listed := strings.ToLower(strings.TrimSpace(candidate))
-		if listed == normalized {
-			return true
-		}
-	}
-	for _, candidate := range models {
-		listed := strings.ToLower(strings.TrimSpace(candidate))
-		if strings.HasPrefix(listed, normalized+":") || strings.HasPrefix(listed, normalized+"-") {
-			return true
-		}
-	}
-	return false
 }

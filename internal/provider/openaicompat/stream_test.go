@@ -526,7 +526,9 @@ func TestListModelsReportsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestMatchesModel(t *testing.T) {
+func TestModelMatchingIsSharedWithTheProviderPackage(t *testing.T) {
+	// The matching rules live in the provider package so that every provider
+	// agrees on what "this model is available" means.
 	models := []string{"Qwen3-Coder", "gpt-4o-2024-08-06", "llama3.1:8b"}
 
 	tests := []struct {
@@ -542,11 +544,11 @@ func TestMatchesModel(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		if got := matchesModel(models, test.model); got != test.want {
-			t.Fatalf("matchesModel(%q) = %v, want %v", test.model, got, test.want)
+		if got := provider.MatchModel(models, test.model); got != test.want {
+			t.Fatalf("MatchModel(%q) = %v, want %v", test.model, got, test.want)
 		}
 	}
-	if matchesModel(nil, "anything") {
+	if provider.MatchModel(nil, "anything") {
 		t.Fatal("an empty listing must not match a model")
 	}
 }

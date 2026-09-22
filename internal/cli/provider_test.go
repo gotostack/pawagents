@@ -37,13 +37,17 @@ func writeProviderConfig(t *testing.T) string {
 	contents := `
 version: 1
 providers:
-  local-ollama:
-    type: ollama
-    base_url: http://127.0.0.1:11434
   gateway:
     type: openai-compatible
     base_url: https://llm.example.com/v1
     api_key_env: PAWAGENTS_TEST_GATEWAY_KEY
+  local-ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+  cloud-anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: PAWAGENTS_TEST_ANTHROPIC_KEY
   gemini:
     type: gemini
   switched-off:
@@ -92,16 +96,18 @@ func TestProviderListText(t *testing.T) {
 		}
 	}
 
+	if !strings.Contains(lines["local-ollama"], providerStatusReady) {
+		t.Fatalf("local-ollama line = %q, want a ready status", lines["local-ollama"])
+	}
 	if !strings.Contains(lines["gateway"], "ready") {
 		t.Fatalf("gateway line = %q, want a ready status", lines["gateway"])
 	}
 	if !strings.Contains(lines["gateway"], "env:PAWAGENTS_TEST_GATEWAY_KEY") {
 		t.Fatalf("gateway line = %q, want the credential description", lines["gateway"])
 	}
-	if !strings.Contains(lines["local-ollama"], providerStatusUnavailable) {
-		// The native Ollama provider is compiled in by a later phase; until
-		// then the listing must say so instead of claiming to be ready.
-		t.Fatalf("local-ollama line = %q, want an unavailable status", lines["local-ollama"])
+	if !strings.Contains(lines["cloud-anthropic"], providerStatusUnavailable) {
+		t.Fatalf("cloud-anthropic line = %q, want an unavailable status",
+			lines["cloud-anthropic"])
 	}
 	if !strings.Contains(lines["gemini"], "planned") {
 		t.Fatalf("gemini line = %q, want a planned status", lines["gemini"])
@@ -123,8 +129,8 @@ func TestProviderListJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
 		t.Fatalf("output is not valid JSON: %v (%s)", err, stdout)
 	}
-	if len(entries) != 4 {
-		t.Fatalf("entries = %d, want 4", len(entries))
+	if len(entries) != 5 {
+		t.Fatalf("entries = %d, want 5", len(entries))
 	}
 
 	byName := map[string]map[string]any{}
@@ -299,7 +305,9 @@ func TestBuiltinProviderTypesAreRegistered(t *testing.T) {
 			ready[entry["type"].(string)] = true
 		}
 	}
-	if !ready["openai-compatible"] {
-		t.Fatalf("the openai-compatible provider must be compiled in, got %v", ready)
+	for _, providerType := range []string{"openai-compatible", "ollama"} {
+		if !ready[providerType] {
+			t.Fatalf("provider type %q must be compiled in, got %v", providerType, ready)
+		}
 	}
 }
