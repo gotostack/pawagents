@@ -319,7 +319,22 @@ func Collect(ctx context.Context, stream Stream) (*Response, error) {
 	defer func() { _ = stream.Close() }()
 
 	response := &Response{Message: Message{Role: RoleAssistant}}
-	var text, thinking strings.Builder
+
+	// Deltas are appended in arrival order and consecutive deltas of the same
+	// kind are merged, which keeps the reasoning and the answer as two ordered
+	// parts instead of reordering them.
+	appendDelta := func(kind ContentKind, text string) {
+		if text == "" {
+			return
+		}
+		if count := len(response.Message.Content); count > 0 &&
+			response.Message.Content[count-1].Kind == kind {
+			response.Message.Content[count-1].Text += text
+			return
+		}
+		response.Message.Content = append(response.Message.Content, ContentPart{Kind: kind, Text: text})
+	}
+
 	fragments := make(map[int]*toolCallBuilder)
 	finished := false
 
@@ -344,9 +359,9 @@ func Collect(ctx context.Context, stream Stream) (*Response, error) {
 				response.Model = event.Model
 			}
 		case EventTextDelta:
-			text.WriteString(event.TextDelta)
+			appendDelta(ContentText, event.TextDelta)
 		case EventThinkingDelta:
-			thinking.WriteString(event.ThinkingDelta)
+			appendDelta(ContentThinking, event.ThinkingDelta)
 		case EventToolCallDelta:
 			builder := fragments[event.Index]
 			if builder == nil {
@@ -404,12 +419,6 @@ func Collect(ctx context.Context, stream Stream) (*Response, error) {
 
 	response.Usage.Normalize()
 
-	if thinking.Len() > 0 {
-		response.Message.Content = append(response.Message.Content, ThinkingPart(thinking.String()))
-	}
-	if text.Len() > 0 {
-		response.Message.Content = append(response.Message.Content, TextPart(text.String()))
-	}
 	response.Message.ToolCalls = mergeToolCalls(fragments)
 
 	if !finished {

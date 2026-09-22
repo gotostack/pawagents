@@ -152,8 +152,18 @@ func TestCollectAccumulatesTextAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect() returned %v", err)
 	}
-	if response.Text() != "let me lookFound two issues." {
+	if response.Text() != "Found two issues." {
 		t.Fatalf("text = %q", response.Text())
+	}
+	if response.Message.ReasoningText() != "let me look" {
+		t.Fatalf("reasoning = %q", response.Message.ReasoningText())
+	}
+	if len(response.Message.Content) != 2 {
+		t.Fatalf("content = %+v, want the reasoning and the answer as ordered parts",
+			response.Message.Content)
+	}
+	if response.Message.Content[0].Kind != ContentThinking || response.Message.Content[1].Kind != ContentText {
+		t.Fatalf("content order = %+v, want reasoning first", response.Message.Content)
 	}
 	if response.FinishReason != FinishReasonStop {
 		t.Fatalf("finish reason = %q", response.FinishReason)

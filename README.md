@@ -34,11 +34,17 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Configuration schema, defaults, normalization, validation | Done |
 | `pagent version`, `pagent config show/validate/init/path` | Done |
 | Built-in agent prompts, embedded in the binary | Done |
-| Agent runtime, tool runtime, providers, MCP server | Planned |
+| Internal LLM protocol (messages, tools, events, capabilities) | Done |
+| HTTP transport with TLS, proxy, credential and header handling | Done |
+| Provider registry with lazy construction | Done |
+| OpenAI-compatible provider (chat completions, streaming, tools) | Done |
+| `pagent provider list`, `pagent provider show` | Done |
+| Native Ollama provider, `pagent provider test` | Next |
+| Repository and git tools, agent loop, MCP server | Planned |
 
 **Not implemented yet** — do not expect these to work:
 
-`pagent run`, `pagent doctor`, `pagent provider …`, `pagent model …`,
+`pagent run`, `pagent doctor`, `pagent provider test`, `pagent model …`,
 `pagent agent …`, `pagent session …`, `pagent mcp serve`. They are described in
 the roadmap below, and each one is documented here as soon as it lands.
 
@@ -183,6 +189,8 @@ only runs a local model is never blocked.
 | `pagent config validate` | Validate and report **every** problem, not just the first. |
 | `pagent config init` | Write a starter `config.yaml` plus the built-in prompts. |
 | `pagent config path` | Print the configuration path in use. |
+| `pagent provider list` | List the configured providers and whether this build can use them. |
+| `pagent provider show <name>` | Describe one provider, the models bound to it and the agents using those models. |
 
 Global flags:
 
@@ -275,17 +283,46 @@ telemetry:          # logging and (later) metrics
   log_format: text
 ```
 
-**Provider types** understood by the configuration schema:
+**Provider types** understood by the configuration schema."Status" describes
+this build, not the roadmap:
 
 | Type | Status |
 | --- | --- |
-| `ollama` | Planned (native provider, phase 4) |
-| `openai-compatible` | Planned (phase 3) |
-| `openai-responses` | Planned (phase 8) |
-| `openai-chat` | Planned |
-| `anthropic` | Planned (phase 8) |
+| `openai-compatible` | Implemented (Chat Completions, streaming, tools) |
+| `ollama` | Known, not implemented yet (native provider, next phase) |
+| `openai-responses` | Known, not implemented yet |
+| `openai-chat` | Known, not implemented yet |
+| `anthropic` | Known, not implemented yet |
 | `gemini` | Roadmap, accepted with a warning |
 | `bedrock` | Roadmap, accepted with a warning |
+
+`pagent provider list` reports the same distinction as a status column:
+`ready`, `planned`, `unavailable` or `disabled`.
+
+### OpenAI-compatible endpoints
+
+The `openai-compatible` type covers everything that speaks the OpenAI Chat
+Completions protocol: DeepSeek, DashScope, OpenRouter, LiteLLM, vLLM and a
+company gateway.
+
+```yaml
+providers:
+  deepseek:
+    type: openai-compatible
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    headers:
+      X-Tenant: acme
+    extra_body:
+      top_k: 40
+    timeout: 120s
+```
+
+Supported knobs: `base_url`, `api_key`, `api_key_env`, `headers`,
+`extra_body`, `timeout`, `proxy` and the `tls` block (`ca_cert_file`,
+`client_cert_file`, `client_key_file`, `server_name`, `insecure_skip_verify`).
+`extra_body` is merged into every request body, so a vendor specific flag never
+needs a code change; a per-request `extra` wins over it.
 
 **Validation severity.** Errors make a configuration unusable: an unknown
 provider type, a model pointing at a provider that does not exist, an agent
@@ -340,6 +377,9 @@ respect.
 cmd/pagent            CLI entry point
 internal/cli          command tree, flags, rendering
 internal/config       configuration schema, loading, defaults, validation
+internal/llm          vendor neutral protocol: messages, tools, events, usage
+internal/provider     provider interface, transport, registry, capabilities
+internal/provider/*   concrete providers (openaicompat, ...)
 internal/apperrors    error kinds, exit codes
 internal/logging      structured logging with redaction
 internal/security     workspace guard, permissions, secret handling
@@ -347,6 +387,28 @@ internal/version      build metadata
 prompts               built-in agent system prompts (embedded in the binary)
 scripts               developer scripts
 ```
+
+### Adding a provider
+
+A provider implements four methods and registers itself:
+
+```go
+func init() {
+    provider.Register(config.ProviderTypeMyVendor, New)
+}
+
+type Provider struct{ /* endpoint, credential, client */ }
+
+func (p *Provider) Name() string { return p.name }
+func (p *Provider) Type() string { return config.ProviderTypeMyVendor }
+func (p *Provider) Capabilities(ctx context.Context, model string) (llm.ModelCapabilities, error)
+func (p *Provider) Generate(ctx context.Context, request *llm.GenerateRequest) (llm.Stream, error)
+```
+
+The contract is deliberately small. A provider translates in both directions
+and reports capabilities; it never retries, never decides policy and never
+holds budget state, because those belong to the agent loop and the
+orchestrator.
 
 ---
 

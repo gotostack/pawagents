@@ -266,12 +266,26 @@ func NewToolResultMessage(result ToolResult) Message {
 	return Message{Role: RoleTool, ToolResult: &clone}
 }
 
-// Text concatenates the textual and reasoning content parts. Tool results and
-// images are ignored.
+// Text concatenates the visible text content parts. Reasoning traces, tool
+// results and images are excluded: Text is what a user or a host agent reads,
+// and a reasoning trace is not part of the answer.
 func (m Message) Text() string {
 	var b strings.Builder
 	for _, part := range m.Content {
-		if part.Kind == ContentText || part.Kind == ContentThinking {
+		if part.Kind == ContentText {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
+}
+
+// ReasoningText concatenates the reasoning content parts. Providers that
+// expose a separate reasoning channel use it to keep the chain of thought out
+// of the answer.
+func (m Message) ReasoningText() string {
+	var b strings.Builder
+	for _, part := range m.Content {
+		if part.Kind == ContentThinking {
 			b.WriteString(part.Text)
 		}
 	}

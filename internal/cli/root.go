@@ -92,6 +92,7 @@ modifying files.`,
 	root.AddCommand(
 		newVersionCmd(),
 		newConfigCmd(app),
+		newProviderCmd(app),
 	)
 
 	return root

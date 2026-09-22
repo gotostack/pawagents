@@ -248,8 +248,11 @@ func TestMessageTextSkipsImagesAndResults(t *testing.T) {
 			TextPart("second"),
 		},
 	}
-	if got := message.Text(); got != "first thinking second" {
-		t.Fatalf("Text() = %q", got)
+	if got := message.Text(); got != "first second" {
+		t.Fatalf("Text() = %q, want only the visible text", got)
+	}
+	if got := message.ReasoningText(); got != "thinking " {
+		t.Fatalf("ReasoningText() = %q", got)
 	}
 }
 
