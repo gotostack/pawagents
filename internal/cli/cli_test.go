@@ -16,6 +16,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -40,13 +41,10 @@ func run(t *testing.T, args ...string) (string, string, int) {
 	root.SetErr(&stderr)
 	root.SetArgs(args)
 
-	err := root.Execute()
-	if err != nil {
-		// Mirror what Execute does in production so that the tests observe the
-		// same rendering as a user would.
-		app.PrintError(err)
-	}
-	return stdout.String(), stderr.String(), apperrors.ExitCode(err)
+	// The tests drive the same execution path as the binary so that they
+	// observe the same rendering and the same exit status as a user would.
+	code := runRoot(context.Background(), app, root)
+	return stdout.String(), stderr.String(), code
 }
 
 func TestVersionTextOutput(t *testing.T) {

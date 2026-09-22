@@ -300,10 +300,20 @@ func (p Permissions) IsZero() bool {
 	return p.Filesystem == "" && p.Shell == "" && len(p.Allow) == 0 && len(p.Deny) == 0
 }
 
+// Agent types. Only a single agent is executed today; a team is reserved for
+// the multi agent roadmap and is accepted by validation with a warning so that
+// a forward looking configuration still loads.
+const (
+	// AgentTypeSingle is one agent, one model, one task.
+	AgentTypeSingle = "single"
+	// AgentTypeTeam is a group of agents.
+	AgentTypeTeam = "team"
+)
+
 // Agent is a reusable, model-agnostic delegation target.
 type Agent struct {
-	// Type is "single" for a normal agent. "team" is reserved for a later
-	// release and is rejected by validation with a warning.
+	// Type is AgentTypeSingle for a normal agent. AgentTypeTeam is reserved
+	// for a later release and is rejected by validation with a warning.
 	Type string `yaml:"type" json:"type,omitempty"`
 	// Description is shown by list_agents so a host can pick an agent.
 	Description string `yaml:"description" json:"description,omitempty"`

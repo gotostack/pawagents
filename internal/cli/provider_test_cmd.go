@@ -27,6 +27,7 @@ import (
 	"github.com/pawagents/pawagents/internal/apperrors"
 	"github.com/pawagents/pawagents/internal/config"
 	"github.com/pawagents/pawagents/internal/llm"
+	"github.com/pawagents/pawagents/internal/orchestrator"
 	"github.com/pawagents/pawagents/internal/provider"
 )
 
@@ -202,7 +203,7 @@ func testProvider(ctx context.Context, app *App, cfg *config.Config, name string
 		default:
 			// The requirement set is derived from the agents bound to the
 			// alias, so the check matches what a run would demand.
-			if err := capabilities.Validate(agentRequirements(cfg, alias), entry.Model); err != nil {
+			if err := capabilities.Validate(orchestrator.RequirementsForAlias(cfg, alias), entry.Model); err != nil {
 				entry.OK = false
 				entry.Error = err.Error()
 			}
@@ -255,35 +256,6 @@ func providerModelAliases(cfg *config.Config, name string) ([]string, []string) 
 		agents = nil
 	}
 	return aliases, agents
-}
-
-// agentRequirements collects what the agents bound to an alias need from the
-// model.
-//
-// Structured output is deliberately not a requirement: the runtime asks for a
-// provider enforced schema only when the model supports one, and otherwise
-// instructs the model in the prompt. Requiring it here would reject every
-// local model that cannot enforce a schema.
-func agentRequirements(cfg *config.Config, alias string) llm.Requirements {
-	requirements := llm.Requirements{}
-
-	for _, agent := range cfg.Agents {
-		if agent == nil || agent.Model != alias {
-			continue
-		}
-		if len(agent.Tools) > 0 {
-			requirements.Tools = true
-		}
-		if agent.Prompt != "" || agent.Instructions != "" {
-			requirements.SystemMessage = true
-		}
-		if agent.MaxContextTokens > 0 &&
-			(requirements.MinContextTokens == 0 || agent.MaxContextTokens < requirements.MinContextTokens) {
-			requirements.MinContextTokens = agent.MaxContextTokens
-		}
-	}
-
-	return requirements
 }
 
 // renderProviderTest writes the human readable report.

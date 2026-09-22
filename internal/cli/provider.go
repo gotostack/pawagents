@@ -31,17 +31,14 @@ import (
 	_ "github.com/pawagents/pawagents/internal/provider/all"
 )
 
-// Provider status values reported by `pagent provider list`.
+// Provider status values reported by `pagent provider list`. They are the
+// shared provider package values so that every command describes a provider
+// identically.
 const (
-	// providerStatusReady means an implementation is compiled into this build.
-	providerStatusReady = "ready"
-	// providerStatusDisabled means the entry is switched off in the configuration.
-	providerStatusDisabled = "disabled"
-	// providerStatusPlanned means the type is documented on the roadmap only.
-	providerStatusPlanned = "planned"
-	// providerStatusUnavailable means the type is known but no implementation
-	// is compiled into this build yet.
-	providerStatusUnavailable = "unavailable"
+	providerStatusReady       = provider.StatusReady
+	providerStatusDisabled    = provider.StatusDisabled
+	providerStatusPlanned     = provider.StatusPlanned
+	providerStatusUnavailable = provider.StatusUnavailable
 )
 
 // providerEntry is the rendered description of a configured provider.
@@ -228,34 +225,10 @@ func describeProvider(cfg *config.Config, name string) providerEntry {
 		entry.Credential = "invalid"
 	}
 
-	entry.Status = providerStatus(cfgProvider, supportedProviderTypes())
+	entry.Status = provider.Status(cfgProvider)
 	entry.Models, entry.Agents = providerConsumers(cfg, name)
 
 	return entry
-}
-
-// supportedProviderTypes returns the provider types compiled into this build.
-func supportedProviderTypes() map[string]bool {
-	factories := provider.DefaultFactories()
-	out := make(map[string]bool, len(factories))
-	for providerType := range factories {
-		out[providerType] = true
-	}
-	return out
-}
-
-// providerStatus reports whether this build can use the provider.
-func providerStatus(cfgProvider *config.Provider, supported map[string]bool) string {
-	if cfgProvider.Disabled {
-		return providerStatusDisabled
-	}
-	if supported[cfgProvider.Type] {
-		return providerStatusReady
-	}
-	if config.IsPlannedProviderType(cfgProvider.Type) {
-		return providerStatusPlanned
-	}
-	return providerStatusUnavailable
 }
 
 // providerConsumers returns the model aliases bound to a provider and the

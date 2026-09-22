@@ -45,13 +45,13 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Agent loop: prompt building, tool rounds, structured result, budgets | Done |
 | Orchestrator: agent profile, model routing, capability validation, grant | Done |
 | `pagent run` | Done |
+| Agent and model registry commands with offline capability checks | Done |
 | MCP server, Codex and Claude Code integration | Planned |
 
 **Not implemented yet** — do not expect these to work:
 
-`pagent doctor`, `pagent model …`, `pagent agent …`, `pagent session …`,
-`pagent mcp serve`. They are described in the roadmap below, and each one is
-documented here as soon as it lands.
+`pagent doctor`, `pagent session …`, `pagent mcp serve`. They are described in
+the roadmap below, and each one is documented here as soon as it lands.
 
 ---
 
@@ -197,6 +197,10 @@ only runs a local model is never blocked.
 | `pagent provider list` | List the configured providers and whether this build can use them. |
 | `pagent provider show <name>` | Describe one provider, the models bound to it and the agents using those models. |
 | `pagent provider test <name>` | Check reachability, model installation and per-model capabilities. Exits 5 when a check fails. |
+| `pagent model list` | List the model aliases, their targets and the agents bound to them. |
+| `pagent model show <alias>` | Describe one alias target by target. `--probe` asks every endpoint. |
+| `pagent agent list` | List the agent profiles, their model, tools, budget and output mode. |
+| `pagent agent show <agent>` | Describe one agent and whether its model can run it. `--probe` asks the endpoint. |
 | `pagent run` | Run one task with a configured agent and print the structured result. |
 
 Global flags:
@@ -290,7 +294,7 @@ telemetry:          # logging and (later) metrics
   log_format: text
 ```
 
-**Provider types** understood by the configuration schema."Status" describes
+**Provider types** understood by the configuration schema. "Status" describes
 this build, not the roadmap:
 
 | Type | Status |
@@ -305,6 +309,112 @@ this build, not the roadmap:
 
 `pagent provider list` reports the same distinction as a status column:
 `ready`, `planned`, `unavailable` or `disabled`.
+
+### Agents, models and capabilities
+
+An agent never names a provider. The agent names a model **alias**, the alias
+names a provider target, and one alias change moves every agent that uses it:
+
+```yaml
+models:
+  strong-coder:
+    primary:
+      provider: cloud-anthropic
+      model: claude-sonnet
+    fallback:
+      - provider: local-ollama
+        model: qwen3-coder
+```
+
+Two commands describe that indirection. Neither contacts a network unless you
+afterwards pass `--probe`:
+
+```bash
+pagent agent list
+```
+
+```
+AGENT           TYPE    MODEL         TARGET                              TOOLS  OUTPUT      ROUNDS  TIMEOUT
+cloud-reviewer  single  strong-coder  cloud-anthropic/claude-sonnet (+1)  2      structured  20      5m0s
+local-reviewer  single  local-coder   local-ollama/qwen3.8:27b-mlx        6      structured  12      10m0s
+```
+
+```bash
+pagent agent show local-reviewer
+```
+
+```
+agent:       local-reviewer
+description: Fully local code review using Ollama
+type:        single
+
+Model
+  alias:     local-coder
+  primary:   local-ollama/qwen3.8:27b-mlx
+
+Tools
+  repo.read    known
+  git.diff     known
+  permissions: filesystem=read shell=deny
+
+Budget
+  rounds:     12
+  tool calls: 20
+  timeout:    10m0s
+  output mode: structured
+
+Capabilities
+  target:     local-ollama/qwen3.8:27b-mlx (static)
+  model:      tool_calling:no  streaming  structured_output:no  max_context_tokens=8192
+  needs:      tool_calling, system_message
+  result:     ✗ missing: tool_calling
+  note:       static capabilities; pass --probe to ask the endpoint
+```
+
+That last section is what makes the command worth running. An agent that grants
+tools needs a model with tool calling; an agent with a prompt needs a system
+role; an agent with a context budget needs a window large enough for it. Those
+requirements are derived from the profile, checked against the model **before**
+a task starts, and every unmet one is named, so a run never fails half way
+through a conversation. `pagent run` refuses the same way, with the same
+message.
+
+The static table is conservative: it never assumes that a local model supports
+tool calling, because an Ollama server can host one that does not. `--probe`
+asks the endpoint what it actually supports — and an endpoint that does not
+answer is then reported as a failure rather than being dressed up as a static
+answer.
+
+```bash
+pagent agent show local-reviewer --probe
+```
+
+```
+Capabilities
+  target:     local-ollama/qwen3.8:27b-mlx (probed)
+  model:      tool_calling  streaming  structured_output  vision  reasoning  max_context_tokens=262144
+  needs:      tool_calling, system_message
+  result:     ✓ the model satisfies every requirement
+```
+
+`pagent model show <alias>` describes the other direction: every target of an
+alias, which one a run would use, and why the ones before it did not.
+
+```bash
+pagent model show strong-coder
+```
+
+```
+alias:       strong-coder
+status:      ready
+
+Targets
+  ✗ primary: cloud-anthropic/claude-sonnet
+      status: unavailable
+      error:  no implementation of anthropic is compiled into this build
+  ✓ fallback 1: local-ollama/qwen3.8:27b-mlx
+      status: ready
+```
 
 ### OpenAI-compatible endpoints
 

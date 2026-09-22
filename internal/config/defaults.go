@@ -97,7 +97,7 @@ func ApplyDefaults(cfg *Config) {
 			continue
 		}
 		if agent.Type == "" {
-			agent.Type = "single"
+			agent.Type = AgentTypeSingle
 		}
 		if agent.MaxRounds == 0 {
 			agent.MaxRounds = DefaultMaxRounds

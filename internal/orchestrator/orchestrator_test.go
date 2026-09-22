@@ -173,15 +173,18 @@ func TestResolveFallsBackToTheNextTarget(t *testing.T) {
 		config.ProviderTypeOllama: fallback,
 	})
 
-	resolved, err := orchestrator.resolve(context.Background(), "local-model")
+	resolved, err := orchestrator.resolve(context.Background(), "local-model", resolveOptions{})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if resolved.Model != "qwen3" || resolved.ProviderName != "local" {
 		t.Fatalf("binding = %+v", resolved)
 	}
-	if len(resolved.Attempts) != 1 || resolved.Attempts[0] != "cloud/cloud-model" {
-		t.Fatalf("attempts = %v", resolved.Attempts)
+	if len(resolved.Skipped) != 1 || resolved.Skipped[0].Target != "cloud/cloud-model" {
+		t.Fatalf("skipped = %v", resolved.Skipped)
+	}
+	if resolved.Skipped[0].Reason == "" {
+		t.Fatalf("a skipped target must explain why: %+v", resolved.Skipped[0])
 	}
 }
 
@@ -189,12 +192,14 @@ func TestResolveFailsWhenNoTargetCanServeTheTask(t *testing.T) {
 	cfg := testConfig(t, nil)
 	orchestrator := testOrchestrator(t, cfg, nil)
 
-	_, err := orchestrator.resolve(context.Background(), "local-model")
+	_, err := orchestrator.resolve(context.Background(), "local-model", resolveOptions{})
 	if err == nil {
 		t.Fatalf("a model whose provider cannot be built must fail")
 	}
-	if kind := apperrors.KindOf(err); kind != apperrors.KindProvider {
-		t.Fatalf("kind = %s, want %s", kind, apperrors.KindProvider)
+	// A single target that cannot be built is reported as the capability gap it
+	// is, rather than as a generic provider failure.
+	if kind := apperrors.KindOf(err); kind != apperrors.KindCapability {
+		t.Fatalf("kind = %s, want %s", kind, apperrors.KindCapability)
 	}
 	if !strings.Contains(err.Error(), "local/qwen3") {
 		t.Fatalf("the error must name the target: %v", err)
@@ -205,7 +210,7 @@ func TestResolveRejectsAnUnknownAlias(t *testing.T) {
 	cfg := testConfig(t, nil)
 	orchestrator := testOrchestrator(t, cfg, nil)
 
-	_, err := orchestrator.resolve(context.Background(), "nope")
+	_, err := orchestrator.resolve(context.Background(), "nope", resolveOptions{})
 	if err == nil {
 		t.Fatalf("an unknown alias must fail")
 	}
@@ -442,7 +447,7 @@ func TestBudgetForAppliesDefaultsAndOverrides(t *testing.T) {
 
 func TestRequirementsForCollectsWhatAnAgentNeeds(t *testing.T) {
 	cfg := testConfig(t, nil)
-	requirements := requirementsFor(cfg.Agents["reviewer"], 4096)
+	requirements := RequirementsFor(cfg.Agents["reviewer"])
 
 	if !requirements.Tools {
 		t.Fatalf("the agent grants a tool, so tool calling is required")
@@ -453,11 +458,40 @@ func TestRequirementsForCollectsWhatAnAgentNeeds(t *testing.T) {
 	if requirements.MinContextTokens != 0 {
 		t.Fatalf("no minimum window was configured: %d", requirements.MinContextTokens)
 	}
-	if requirements.MaxOutputTokens != 4096 {
-		t.Fatalf("max output = %d", requirements.MaxOutputTokens)
+	if requirements.MaxOutputTokens != 0 {
+		t.Fatalf("max output must not be a model requirement: %d", requirements.MaxOutputTokens)
 	}
 	if requirements.StructuredOutput {
 		t.Fatalf("structured output must never be required")
+	}
+}
+
+func TestRequirementsForAliasMergesEveryBoundAgent(t *testing.T) {
+	cfg := testConfig(t, func(cfg *config.Config) {
+		cfg.Agents["plain"] = &config.Agent{Model: "local-model", OutputMode: config.OutputModeText}
+		cfg.Agents["demanding"] = &config.Agent{
+			Model:            "local-model",
+			Instructions:     "review",
+			Tools:            []string{"repo.read"},
+			MaxContextTokens: 32768,
+			OutputMode:       config.OutputModeText,
+		}
+		cfg.Agents["other"] = &config.Agent{Model: "nowhere", Instructions: "review"}
+	})
+
+	merged := RequirementsForAlias(cfg, "local-model")
+	if !merged.Tools || !merged.SystemMessage {
+		t.Fatalf("merged requirements = %+v", merged)
+	}
+	if merged.MinContextTokens != 32768 {
+		t.Fatalf("the largest window requirement must win: %d", merged.MinContextTokens)
+	}
+
+	if requirements := RequirementsForAlias(cfg, "nowhere"); requirements.Tools {
+		t.Fatalf("an agent without tools contributes no tool requirement")
+	}
+	if requirements := RequirementsForAlias(nil, "local-model"); requirements != (llm.Requirements{}) {
+		t.Fatalf("a nil configuration yields no requirements: %+v", requirements)
 	}
 }
 

@@ -27,15 +27,38 @@ import (
 // classified, rendered on stderr and mapped to a documented exit code.
 func Execute(ctx context.Context) int {
 	app := NewApp()
-	root := newRootCmd(app)
+	return runRoot(ctx, app, newRootCmd(app))
+}
+
+// runRoot executes a command tree and renders the outcome.
+//
+// It exists so that the tests drive exactly the code path the binary drives:
+// a test that built its own error handling would not catch a mistake in this
+// one.
+func runRoot(ctx context.Context, app *App, root *cobra.Command) int {
 	root.SetOut(app.Out())
 	root.SetErr(app.Err())
 
 	if err := root.ExecuteContext(ctx); err != nil {
+		err = classifyUsage(err)
 		app.PrintError(err)
 		return apperrors.ExitCode(err)
 	}
 	return apperrors.ExitOK
+}
+
+// classifyUsage turns an unclassified command line failure into a usage error.
+//
+// Everything the runtime raises carries a kind, so an error without one can
+// only have come from the command line layer itself: an unknown command, a
+// missing argument, an unparsable flag. Those are usage mistakes and must exit
+// with the documented usage code instead of the unclassified one, which is why
+// the classification happens here rather than in every command.
+func classifyUsage(err error) error {
+	if err == nil || apperrors.KindOf(err) != apperrors.KindInternal {
+		return err
+	}
+	return apperrors.New(apperrors.KindInvalidArgument, "cli.usage", "%s", err)
 }
 
 // newRootCmd builds the command tree.
@@ -93,6 +116,8 @@ modifying files.`,
 		newVersionCmd(),
 		newConfigCmd(app),
 		newProviderCmd(app),
+		newModelCmd(app),
+		newAgentCmd(app),
 		newRunCmd(app),
 	)
 

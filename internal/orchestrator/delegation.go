@@ -17,8 +17,6 @@ package orchestrator
 import (
 	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/pawagents/pawagents/internal/agent"
@@ -27,7 +25,6 @@ import (
 	"github.com/pawagents/pawagents/internal/security"
 	"github.com/pawagents/pawagents/internal/tools"
 	"github.com/pawagents/pawagents/internal/tools/builtin"
-	"github.com/pawagents/pawagents/prompts"
 )
 
 // Run resolves a request, configures an agent and runs one task.
@@ -47,7 +44,26 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 		return nil, err
 	}
 
-	resolved, err := o.resolve(ctx, agentCfg.Model)
+	// The profile is resolved first: an agent this release cannot execute, or
+	// one granting a tool the runtime does not have, must fail before a
+	// provider is contacted.
+	profile, err := o.Profile(request.Agent)
+	if err != nil {
+		return nil, err
+	}
+	if !profile.Executable {
+		return nil, apperrors.New(apperrors.KindCapability, "orchestrator.run",
+			"agent %q is of type %q, and only %q agents run in this release",
+			profile.Name, profile.Type, TypeSingle)
+	}
+	if unknown := profile.UnknownTools(); len(unknown) > 0 {
+		return nil, apperrors.New(apperrors.KindCapability, "orchestrator.run",
+			"agent %q grants unknown tool(s): %s",
+			profile.Name, strings.Join(unknown, ", ")).
+			WithDetails(map[string]any{"unknown": unknown, "available": builtin.ToolNames()})
+	}
+
+	resolved, err := o.resolve(ctx, agentCfg.Model, resolveOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -80,18 +96,11 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 		}
 	}()
 
-	profile := agent.Profile{
-		Name:         strings.TrimSpace(request.Agent),
-		Description:  agentCfg.Description,
-		ModelAlias:   agentCfg.Model,
-		SystemPrompt: systemPrompt,
-		OutputMode:   outputModeOf(agentCfg, request.OutputMode),
-		Tools:        grant.Names(),
-		Grant:        grant,
-	}
+	profile.OutputMode = outputModeOf(agentCfg, request.OutputMode)
+	runtime := runtimeProfile(profile, systemPrompt, grant)
 
 	runner, err := agent.NewRunner(agent.RunnerOptions{
-		Profile:         profile,
+		Profile:         runtime,
 		Model:           resolved.Provider,
 		ModelName:       resolved.Model,
 		Capabilities:    resolved.Capabilities,
@@ -106,7 +115,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 	}
 
 	o.logger.Debug("running agent",
-		slog.String("agent", profile.Name),
+		slog.String("agent", runtime.Name),
 		slog.String("provider", resolved.ProviderName),
 		slog.String("model", resolved.Model),
 		slog.Int("max_rounds", budget.MaxRounds),
@@ -132,7 +141,7 @@ func (o *Orchestrator) agentConfig(name string) (*config.Agent, error) {
 	trimmed := strings.TrimSpace(name)
 	agentCfg, ok := o.cfg.Agents[trimmed]
 	if !ok || agentCfg == nil {
-		return nil, apperrors.New(apperrors.KindNotFound, "orchestrator.run",
+		return nil, apperrors.New(apperrors.KindNotFound, "orchestrator.agent",
 			"agent %q is not defined in the configuration", trimmed).
 			WithDetails(map[string]any{"available": o.cfg.AgentNames()})
 	}
@@ -158,35 +167,6 @@ func (o *Orchestrator) buildExecutor(grant *security.Grant, budget agent.Budget,
 
 	registry := builtin.NewRegistry()
 	return tools.NewExecutor(registry, grant, environment), workspace, nil
-}
-
-// loadSystemPrompt reads the instruction text of an agent.
-//
-// A prompt file is loaded from disk, and if it is missing the bundled copy of
-// the same name is used instead. That fallback matters on a machine where the
-// configuration was copied between users: the agent keeps working with the
-// prompt it was written for instead of running without any instruction at all.
-func loadSystemPrompt(agentCfg *config.Agent) (string, error) {
-	if inline := strings.TrimSpace(agentCfg.Instructions); inline != "" {
-		return inline, nil
-	}
-
-	path := strings.TrimSpace(agentCfg.Prompt)
-	if path == "" {
-		return "", nil
-	}
-
-	data, err := os.ReadFile(path)
-	if err == nil {
-		return strings.TrimSpace(string(data)), nil
-	}
-
-	if bundled, bundledErr := prompts.Read(filepath.Base(path)); bundledErr == nil {
-		return strings.TrimSpace(bundled), nil
-	}
-
-	return "", apperrors.Wrap(apperrors.KindConfig, "orchestrator.prompt",
-		"cannot read the prompt file %s", err, path)
 }
 
 // temperatureOf reads the sampling temperature configured for an alias.

@@ -42,9 +42,21 @@ type binding struct {
 	ModelConfig *config.Model
 	// Capabilities is the effective capability set.
 	Capabilities llm.ModelCapabilities
-	// Attempts lists the targets that were tried before this one, so that a
-	// fallback is visible in a log or an error message.
-	Attempts []string
+	// Skipped lists the targets that were tried and passed over before this
+	// one, so that a fallback is visible in a log, a report or an error.
+	Skipped []SkippedTarget
+}
+
+// resolveOptions tunes how a model alias is resolved.
+type resolveOptions struct {
+	// requireReachability asks every target whether it can be reached before
+	// its capabilities are accepted.
+	//
+	// It is set by an explicit probe, where an endpoint that does not answer is
+	// the answer, and never by a run: a task must not pay a health round trip
+	// and must not be refused because an endpoint that serves generations did
+	// not implement a separate probe.
+	requireReachability bool
 }
 
 // resolve turns a model alias into a provider instance and its capabilities.
@@ -55,7 +67,7 @@ type binding struct {
 // every target fails does the error surface, and then it names all of them,
 // because "deepseek failed" is far less useful than "deepseek and anthropic
 // both failed, with these reasons".
-func (o *Orchestrator) resolve(ctx context.Context, alias string) (*binding, error) {
+func (o *Orchestrator) resolve(ctx context.Context, alias string, options resolveOptions) (*binding, error) {
 	targets, modelCfg, err := o.cfg.ModelTargets(alias)
 	if err != nil {
 		return nil, apperrors.New(apperrors.KindConfig, "orchestrator.resolve",
@@ -69,6 +81,7 @@ func (o *Orchestrator) resolve(ctx context.Context, alias string) (*binding, err
 
 	var problems []error
 	attempts := make([]string, 0, len(targets))
+	skipped := make([]SkippedTarget, 0, len(targets))
 
 	for _, target := range targets {
 		attempts = append(attempts, describeTarget(target))
@@ -76,11 +89,24 @@ func (o *Orchestrator) resolve(ctx context.Context, alias string) (*binding, err
 		instance, err := o.registry.Provider(ctx, target.Provider)
 		if err != nil {
 			problems = append(problems, err)
+			skipped = append(skipped, skippedTarget(target, err))
 			o.logger.Debug("provider is unavailable",
 				slog.String("agent_model", alias),
 				slog.String("target", describeTarget(target)),
 				slog.String("error", err.Error()))
 			continue
+		}
+
+		if options.requireReachability {
+			if err := probeReachability(ctx, instance); err != nil {
+				problems = append(problems, err)
+				skipped = append(skipped, skippedTarget(target, err))
+				o.logger.Debug("endpoint is not reachable",
+					slog.String("agent_model", alias),
+					slog.String("target", describeTarget(target)),
+					slog.String("error", err.Error()))
+				continue
+			}
 		}
 
 		// Capabilities are probed before the first token is spent: a model
@@ -89,6 +115,7 @@ func (o *Orchestrator) resolve(ctx context.Context, alias string) (*binding, err
 		probe, err := instance.Capabilities(ctx, target.Model)
 		if err != nil {
 			problems = append(problems, err)
+			skipped = append(skipped, skippedTarget(target, err))
 			o.logger.Debug("capability probe failed",
 				slog.String("agent_model", alias),
 				slog.String("target", describeTarget(target)),
@@ -107,11 +134,11 @@ func (o *Orchestrator) resolve(ctx context.Context, alias string) (*binding, err
 			Model:        target.Model,
 			ModelConfig:  modelCfg,
 			Capabilities: capabilities,
-			Attempts:     attempts[:len(attempts)-1],
+			Skipped:      skipped,
 		}, nil
 	}
 
-	return nil, apperrors.Wrap(apperrors.KindProvider, "orchestrator.resolve",
+	return nil, apperrors.Wrap(aggregateKind(problems), "orchestrator.resolve",
 		"no provider target of %q could serve the task (tried %s)",
 		errors.Join(problems...), alias, describeTargets(targets)).
 		WithDetails(map[string]any{
@@ -120,30 +147,46 @@ func (o *Orchestrator) resolve(ctx context.Context, alias string) (*binding, err
 		})
 }
 
-// requirementsFor collects what an agent needs from a model.
+// aggregateKind classifies a set of target failures.
 //
-// Structured output is deliberately not a requirement: the runtime asks for a
-// provider enforced schema only when the model supports one, and otherwise
-// instructs the model in the prompt. Requiring it would reject every local
-// model that cannot enforce a schema while still answering in JSON.
-func requirementsFor(agentCfg *config.Agent, maxOutputTokens int) llm.Requirements {
-	requirements := llm.Requirements{
-		SystemMessage:   agentCfg.Prompt != "" || agentCfg.Instructions != "",
-		MaxOutputTokens: maxOutputTokens,
+// When every target failed the same way the specific kind is kept, because it
+// drives the exit status a host branches on: an expired credential must still
+// be an authentication error, and a missing model must still be a not-found
+// error, even though the router as a whole failed to find a target. A mixed
+// set of failures has no more precise description than "no provider could
+// serve this".
+func aggregateKind(problems []error) apperrors.Kind {
+	kind := apperrors.KindProvider
+	for index, problem := range problems {
+		current := apperrors.KindOf(problem)
+		if index == 0 {
+			kind = current
+			continue
+		}
+		if current != kind {
+			return apperrors.KindProvider
+		}
 	}
-	if len(agentCfg.Tools) > 0 {
-		requirements.Tools = true
+
+	if kind == "" || kind == apperrors.KindInternal {
+		return apperrors.KindProvider
 	}
-	if agentCfg.MaxContextTokens > 0 {
-		requirements.MinContextTokens = agentCfg.MaxContextTokens
-	}
-	return requirements
+	return kind
 }
 
 // validateAgent checks an agent configuration against the resolved model.
 func validateAgent(agentCfg *config.Agent, resolved *binding) error {
-	requirements := requirementsFor(agentCfg, resolved.Capabilities.MaxOutputTokens)
+	requirements := RequirementsFor(agentCfg)
 	return resolved.Capabilities.Validate(requirements, resolved.Model)
+}
+
+// skippedTarget records a target that was passed over and why.
+func skippedTarget(target config.ModelRef, err error) SkippedTarget {
+	reason := "unknown failure"
+	if err != nil {
+		reason = apperrors.Summary(err)
+	}
+	return SkippedTarget{Target: describeTarget(target), Reason: reason}
 }
 
 // describeTargets renders a target list for an error message.
@@ -156,4 +199,34 @@ func describeTargets(targets []config.ModelRef) string {
 		out += describeTarget(target)
 	}
 	return out
+}
+
+// probeReachability asks a provider whether it can be reached.
+//
+// The capability contract deliberately lets a provider degrade to its static
+// table when an endpoint does not answer, because a capability answer is more
+// useful to a run than a refusal. An explicit probe is the opposite case: the
+// user asked what the endpoint supports, so an endpoint that does not answer
+// has to be reported as a failure rather than dressed up as a static answer.
+func probeReachability(ctx context.Context, instance provider.Provider) error {
+	if reporter, ok := instance.(provider.HealthReporter); ok {
+		health, err := reporter.Health(ctx)
+		if err != nil {
+			return err
+		}
+		if !health.Reachable {
+			return apperrors.New(apperrors.KindProvider, "orchestrator.probe",
+				"the endpoint of provider %q did not answer: %s", instance.Name(), health.Detail)
+		}
+		return nil
+	}
+
+	// Without a health probe the model listing is the only reachability signal
+	// a provider offers, and asking for it twice is free: it is cached.
+	if lister, ok := instance.(provider.ModelLister); ok {
+		if _, err := lister.ListModels(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
