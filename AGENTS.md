@@ -22,8 +22,10 @@ API.
    MCP tools and the same request/response schema. Never define a
    `CodexDelegateRequest` or a `ClaudeDelegateRequest`.
 3. **No vendor types in the runtime.** `openai.ChatCompletionMessage`,
-   `anthropic.Message` and `ollama.ChatResponse` must be converted to the
-   internal protocol at the provider boundary.
+   `anthropic.Message` and `ollama.ChatResponse` must be converted to
+   `internal/llm` at the provider boundary. That package is the only shared
+   protocol: providers and the agent loop import it, and it imports nothing but
+   the standard library and `apperrors`. Never add a vendor import to it.
 4. **Capabilities are checked, never assumed.** A model that does not support
    tool calling produces a `CapabilityError`; never fall back to faking tool
    calls with text tags.
@@ -48,6 +50,7 @@ API.
 cmd/pagent            CLI entry point
 internal/cli          command tree, flags, rendering
 internal/config       configuration schema, loading, defaults, validation
+internal/llm          vendor neutral protocol: messages, tools, events, usage
 internal/agent        agent loop, context management, results
 internal/orchestrator delegation, budgets, routing
 internal/provider     provider abstraction and concrete providers

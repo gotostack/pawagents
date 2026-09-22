@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/pawagents/pawagents/internal/apperrors"
+	"github.com/pawagents/pawagents/internal/llm"
 )
 
 // Validation limits. They are named so that the error messages can quote them.
@@ -40,9 +41,6 @@ const (
 
 // identPattern matches provider, model and agent names.
 var identPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-
-// toolNamePattern matches "namespace.tool" tool names.
-var toolNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$`)
 
 // ValidationResult is the structured report produced by Validate.
 type ValidationResult struct {
@@ -347,7 +345,9 @@ func validateAgents(cfg *Config, result *ValidationResult) {
 		}
 
 		for _, tool := range agent.Tools {
-			if !toolNamePattern.MatchString(tool) {
+			// The tool name pattern comes from internal/llm so that a name that
+			// validates here is also a name the runtime can dispatch.
+			if !llm.IsValidToolName(tool) {
 				result.add("%s: tool %q is not a valid tool name (want namespace.tool)", label, tool)
 				continue
 			}
@@ -389,7 +389,7 @@ func validateAgentPermissions(agent *Agent, label string, result *ValidationResu
 	}
 
 	for _, tool := range append(append([]string{}, agent.Permissions.Allow...), agent.Permissions.Deny...) {
-		if !toolNamePattern.MatchString(tool) {
+		if !llm.IsValidToolName(tool) {
 			result.add("%s: permissions entry %q is not a valid tool name (want namespace.tool)",
 				label, tool)
 		}
