@@ -93,6 +93,7 @@ modifying files.`,
 		newVersionCmd(),
 		newConfigCmd(app),
 		newProviderCmd(app),
+		newRunCmd(app),
 	)
 
 	return root

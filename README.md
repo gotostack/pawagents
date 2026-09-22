@@ -42,14 +42,16 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | `pagent provider list`, `pagent provider show`, `pagent provider test` | Done |
 | Workspace guard: traversal, symlink, blocked path and size enforcement | Done |
 | Read-only repository tools and git tools | Done |
-| Agent loop and `pagent run` | Next |
+| Agent loop: prompt building, tool rounds, structured result, budgets | Done |
+| Orchestrator: agent profile, model routing, capability validation, grant | Done |
+| `pagent run` | Done |
 | MCP server, Codex and Claude Code integration | Planned |
 
 **Not implemented yet** — do not expect these to work:
 
-`pagent run`, `pagent doctor`, `pagent model …`, `pagent agent …`,
-`pagent session …`, `pagent mcp serve`. They are described in the roadmap
-below, and each one is documented here as soon as it lands.
+`pagent doctor`, `pagent model …`, `pagent agent …`, `pagent session …`,
+`pagent mcp serve`. They are described in the roadmap below, and each one is
+documented here as soon as it lands.
 
 ---
 
@@ -195,6 +197,7 @@ only runs a local model is never blocked.
 | `pagent provider list` | List the configured providers and whether this build can use them. |
 | `pagent provider show <name>` | Describe one provider, the models bound to it and the agents using those models. |
 | `pagent provider test <name>` | Check reachability, model installation and per-model capabilities. Exits 5 when a check fails. |
+| `pagent run` | Run one task with a configured agent and print the structured result. |
 
 Global flags:
 
@@ -396,6 +399,56 @@ asking for shell access. Warnings describe a configuration that still runs: a
 missing API key environment variable, a prompt file that has not been created, a
 roadmap feature that is accepted but not yet wired up.
 
+Then run a task. **No cloud model API is required** at any point:
+
+```bash
+pagent run \
+    --agent local-reviewer \
+    --task "Review my current git changes"
+```
+
+```
+status:   completed
+agent:    local-reviewer
+model:    local-ollama/qwen3-coder
+duration: 1m30s
+usage:    7411 input tokens, 600 output tokens, 1 tool calls, 2 rounds
+
+summary
+  I read the diff and the surrounding code. One issue, in the retry path.
+
+findings (1)
+
+1. [high] The retry drops the request body
+   where:      internal/provider/transport.go:88
+   category:   correctness
+   detail:     The second attempt reuses a consumed reader, so it sends an empty body.
+   evidence:   req.Body is read once by the first attempt.
+   suggestion: Buffer the body before the first attempt.
+   confidence: 0.80
+```
+
+Useful flags:
+
+| Flag | Purpose |
+| --- | --- |
+| `--agent` | The agent profile to run (required). |
+| `--task` | The instruction, or `-` to read it from standard input. |
+| `--workspace` | Directory the agent may read. Defaults to the working directory. |
+| `--file` | Starting point for the investigation. Repeatable. |
+| `--constraint` | A rule the answer must respect. Repeatable. |
+| `--background` | Context the agent cannot discover for itself. |
+| `--max-rounds`, `--timeout` | Override the agent budget for one run. |
+| `--output` | `text` (default) or `json` for the full envelope. |
+
+The result is always the same envelope — status, agent, model, summary, findings
+and usage — whatever model produced it, and the exit code is derived from the
+classified error, so a budget failure (11), a timeout (12) or a denied tool (6)
+can be handled by a script without parsing prose. Structured output is a
+*request*: PawAgents binds the model to a JSON schema when the provider can
+enforce one, and otherwise asks for the envelope in the prompt. An empty finding
+list is a valid answer.
+
 ---
 
 ## Security model
@@ -476,6 +529,8 @@ internal/config       configuration schema, loading, defaults, validation
 internal/llm          vendor neutral protocol: messages, tools, events, usage
 internal/provider     provider interface, transport, registry, capabilities
 internal/provider/*   concrete providers (ollama, openaicompat, ...)
+internal/orchestrator agent profiles, model routing, capability validation, budget
+internal/agent        agent loop: prompt building, tool rounds, structured result
 internal/tools        tool runtime: registry, executor, argument decoding
 internal/tools/repo   repository readers (read, list, search, stat)
 internal/tools/git    git readers (diff, show, status, log)
