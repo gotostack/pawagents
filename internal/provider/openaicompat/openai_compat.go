@@ -17,7 +17,6 @@ package openaicompat
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -186,12 +185,12 @@ func (p *Provider) fetchModels(ctx context.Context) ([]string, error) {
 
 	response, err := p.transport.Client.Do(request)
 	if err != nil {
-		return nil, networkError("provider.models", err)
+		return nil, provider.NetworkError("provider.models", err, "")
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode >= 400 {
-		return nil, httpStatusError("provider.models", response, readErrorBody(response))
+		return nil, provider.HTTPStatusError("provider.models", response, provider.ReadErrorBody(response))
 	}
 
 	var listing chatModelList
@@ -245,7 +244,7 @@ func (p *Provider) Generate(ctx context.Context, request *llm.GenerateRequest) (
 // function that owns its request deadline. The caller must call cancel when it
 // stops reading the body.
 func (p *Provider) post(ctx context.Context, payload *chatRequest) (*http.Response, context.CancelFunc, error) {
-	encoded, err := marshalRequest(payload)
+	encoded, err := provider.MarshalRequest(payload, payload.Extra)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -268,14 +267,14 @@ func (p *Provider) post(ctx context.Context, payload *chatRequest) (*http.Respon
 	response, err := p.transport.Client.Do(request)
 	if err != nil {
 		cancel()
-		return nil, nil, networkError("provider.generate", err)
+		return nil, nil, provider.NetworkError("provider.generate", err, "")
 	}
 
 	if response.StatusCode >= 400 {
-		body := readErrorBody(response)
+		body := provider.ReadErrorBody(response)
 		_ = response.Body.Close()
 		cancel()
-		return nil, nil, httpStatusError("provider.generate", response, body)
+		return nil, nil, provider.HTTPStatusError("provider.generate", response, body)
 	}
 
 	return response, cancel, nil
@@ -308,7 +307,7 @@ func (p *Provider) openStream(response *http.Response, cancel context.CancelFunc
 		return nil, err
 	}
 
-	return newBufferedStream(events, cancel, nil), nil
+	return provider.NewBufferedStream(events, cancel, nil), nil
 }
 
 // buildRequest maps the protocol request onto the wire format.
@@ -360,37 +359,6 @@ func (p *Provider) buildRequest(request *llm.GenerateRequest, stream bool) (*cha
 // protocol does not model, or override one the protocol sets, without a code
 // change. A conflicting extra always wins, because it is the more specific
 // instruction.
-func marshalRequest(payload *chatRequest) ([]byte, error) {
-	if payload == nil {
-		return nil, apperrors.New(apperrors.KindInternal, "provider.request",
-			"the request payload is nil")
-	}
-
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return nil, apperrors.Wrap(apperrors.KindInternal, "provider.request",
-			"cannot encode the request body", err)
-	}
-	if len(payload.Extra) == 0 {
-		return encoded, nil
-	}
-
-	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
-		return nil, apperrors.Wrap(apperrors.KindInternal, "provider.request",
-			"cannot merge the extra request fields", err)
-	}
-	for key, value := range payload.Extra {
-		object[key] = value
-	}
-
-	merged, err := json.Marshal(object)
-	if err != nil {
-		return nil, apperrors.Wrap(apperrors.KindInternal, "provider.request",
-			"cannot encode the merged request body", err)
-	}
-	return merged, nil
-}
 
 // encode merges the provider extra_body and the request extra options and
 // marshals the payload. ExtraBody is applied first so that a per-request value
@@ -500,7 +468,7 @@ func toUserContent(message llm.Message) (any, error) {
 			}
 			url := part.Image.URL
 			if url == "" {
-				url = dataURL(part.Image.MIMEType, part.Image.Data)
+				url = provider.DataURL(part.Image.MIMEType, part.Image.Data)
 			}
 			parts = append(parts, chatContentPart{
 				Type:     "image_url",
@@ -549,115 +517,6 @@ func toToolChoice(choice llm.ToolChoice) any {
 	default:
 		return nil
 	}
-}
-
-// dataURL builds an RFC 2397 data URL for inline image bytes.
-func dataURL(mimeType string, data []byte) string {
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
-	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
-}
-
-// readErrorBody reads a bounded error body. The body is always closed by the
-// caller.
-func readErrorBody(response *http.Response) []byte {
-	if response == nil || response.Body == nil {
-		return nil
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxErrorBodyBytes))
-	if err != nil {
-		return nil
-	}
-	return body
-}
-
-// httpStatusError maps an HTTP failure onto the PawAgents error model.
-func httpStatusError(op string, response *http.Response, body []byte) error {
-	status := response.StatusCode
-	message := providerMessage(body)
-	if message == "" {
-		message = http.StatusText(status)
-	}
-
-	details := map[string]any{"status": status}
-	if requestID := response.Header.Get("X-Request-Id"); requestID != "" {
-		details["request_id"] = requestID
-	}
-
-	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return apperrors.New(apperrors.KindAuthentication, op,
-			"the provider rejected the credential (HTTP %d): %s", status, message).
-			WithDetails(details)
-	case status == http.StatusTooManyRequests:
-		if retryAfter := response.Header.Get("Retry-After"); retryAfter != "" {
-			details["retry_after"] = retryAfter
-		}
-		return apperrors.New(apperrors.KindProvider, op,
-			"the provider rate limited the request (HTTP %d): %s", status, message).
-			WithDetails(details)
-	case status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout:
-		return apperrors.New(apperrors.KindTimeout, op,
-			"the provider timed out (HTTP %d): %s", status, message).WithDetails(details)
-	case status == http.StatusNotFound:
-		return apperrors.New(apperrors.KindProvider, op,
-			"the endpoint or model was not found (HTTP %d): %s", status, message).
-			WithDetails(details)
-	default:
-		return apperrors.New(apperrors.KindProvider, op,
-			"the provider returned HTTP %d: %s", status, message).WithDetails(details)
-	}
-}
-
-// providerMessage extracts the human readable part of an error body.
-func providerMessage(body []byte) string {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return ""
-	}
-
-	var envelope struct {
-		Error *chatError `json:"error"`
-	}
-	if err := json.Unmarshal(trimmed, &envelope); err == nil && envelope.Error != nil &&
-		strings.TrimSpace(envelope.Error.Message) != "" {
-		return sanitizeMessage(envelope.Error.Message)
-	}
-
-	// A non JSON body is usually an HTML error page from a proxy. Only the
-	// first line is useful, and it must not be echoed verbatim into logs.
-	text := string(trimmed)
-	if index := strings.IndexByte(text, '\n'); index >= 0 {
-		text = text[:index]
-	}
-	if len(text) > 400 {
-		text = text[:400] + "..."
-	}
-	return sanitizeMessage(text)
-}
-
-// sanitizeMessage collapses whitespace so that a multi-line provider message
-// stays on one log line.
-func sanitizeMessage(message string) string {
-	return strings.Join(strings.Fields(message), " ")
-}
-
-// networkError maps a transport failure onto the error model.
-func networkError(op string, err error) error {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return apperrors.Wrap(apperrors.KindTimeout, op, "the provider request timed out", err)
-	case errors.Is(err, context.Canceled):
-		return apperrors.Wrap(apperrors.KindCancelled, op, "the provider request was cancelled", err)
-	}
-
-	var netErr interface{ Timeout() bool }
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return apperrors.Wrap(apperrors.KindTimeout, op, "the provider request timed out", err)
-	}
-
-	return apperrors.Wrap(apperrors.KindProvider, op, "cannot reach the provider endpoint", err)
 }
 
 // isUnsupportedStreamOptions reports whether a failure was caused by the

@@ -77,6 +77,11 @@ type Result struct {
 	// parsed into findings, because a host may want to show the reasoning.
 	Text string `json:"text,omitempty"`
 
+	// Skipped lists the model targets that were passed over before this one,
+	// with the reason. It is reported because falling back silently would let a
+	// user believe a cloud model answered when a local one did, or the reverse.
+	Skipped []string `json:"skipped,omitempty"`
+
 	Usage Usage `json:"usage"`
 
 	// SessionID is set once sessions are persisted.
@@ -146,6 +151,9 @@ func (r *Result) RenderText() string {
 	fmt.Fprintf(&b, "duration: %s\n", r.Duration().Round(time.Millisecond))
 	fmt.Fprintf(&b, "usage:    %d input tokens, %d output tokens, %d tool calls, %d rounds\n",
 		r.Usage.InputTokens, r.Usage.OutputTokens, r.Usage.ToolCalls, r.Usage.Rounds)
+	for _, skipped := range r.Skipped {
+		fmt.Fprintf(&b, "skipped:  %s\n", skipped)
+	}
 	if r.Error != "" {
 		fmt.Fprintf(&b, "error:    %s\n", r.Error)
 	}

@@ -51,13 +51,27 @@ func StaticCapabilities(providerType string) llm.ModelCapabilities {
 			SystemMessage:    true,
 			MaxContextTokens: ConservativeContextTokens,
 		}
-	case config.ProviderTypeOpenAIResponses, config.ProviderTypeOpenAIChat,
-		config.ProviderTypeAnthropic:
+	case config.ProviderTypeOpenAIResponses, config.ProviderTypeOpenAIChat:
 		return llm.ModelCapabilities{
 			ToolCalling:      true,
 			ParallelTools:    true,
 			Streaming:        true,
 			StructuredOutput: true,
+			Vision:           true,
+			Reasoning:        true,
+			SystemMessage:    true,
+			MaxContextTokens: CloudContextTokens,
+		}
+	case config.ProviderTypeAnthropic:
+		// The Messages API has no response_format: a completion cannot be
+		// constrained to a JSON schema, so the runtime asks the model for the
+		// finding envelope in the prompt instead. Claiming otherwise would make
+		// the agent loop send a schema the endpoint rejects.
+		return llm.ModelCapabilities{
+			ToolCalling:      true,
+			ParallelTools:    true,
+			Streaming:        true,
+			StructuredOutput: false,
 			Vision:           true,
 			Reasoning:        true,
 			SystemMessage:    true,

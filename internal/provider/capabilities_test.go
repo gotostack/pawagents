@@ -37,11 +37,25 @@ func TestStaticCapabilities(t *testing.T) {
 	}
 
 	anthropic := StaticCapabilities(config.ProviderTypeAnthropic)
-	if !anthropic.ToolCalling || !anthropic.ParallelTools || !anthropic.StructuredOutput {
+	if !anthropic.ToolCalling || !anthropic.ParallelTools || !anthropic.Vision {
 		t.Fatalf("anthropic capabilities = %+v", anthropic)
+	}
+	// The Messages API cannot constrain a completion to a JSON schema, so the
+	// runtime must be told to ask for the envelope in the prompt instead.
+	if anthropic.StructuredOutput {
+		t.Fatalf("anthropic must not claim structured output: %+v", anthropic)
 	}
 	if anthropic.MaxContextTokens != CloudContextTokens {
 		t.Fatalf("anthropic context = %d", anthropic.MaxContextTokens)
+	}
+
+	responses := StaticCapabilities(config.ProviderTypeOpenAIResponses)
+	if !responses.ToolCalling || !responses.ParallelTools || !responses.StructuredOutput ||
+		!responses.Reasoning {
+		t.Fatalf("responses capabilities = %+v", responses)
+	}
+	if responses.MaxContextTokens != CloudContextTokens {
+		t.Fatalf("responses context = %d", responses.MaxContextTokens)
 	}
 
 	compat := StaticCapabilities(config.ProviderTypeOpenAICompat)

@@ -609,6 +609,41 @@ func TestProbeModelDoesNotMutateTheCaller(t *testing.T) {
 	}
 }
 
+func TestRunReportsTheTargetItUsedAndTheOnesItSkipped(t *testing.T) {
+	cfg := registryConfig(t, nil)
+	gateway := &fakeProvider{
+		name:         "gateway",
+		providerType: config.ProviderTypeOpenAICompat,
+		capabilities: providerCapabilities(),
+		scripts:      [][]llm.Event{answerEvents("answer")},
+	}
+	orchestrator := testOrchestrator(t, cfg, map[string]provider.Provider{
+		config.ProviderTypeOpenAICompat: gateway,
+	})
+
+	result, err := orchestrator.Run(context.Background(),
+		Request{Agent: "mixed-reviewer", Task: "Review"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.Provider != "gateway" || result.Model != "fake-model" {
+		t.Fatalf("identity = %+v", result)
+	}
+	if len(result.Skipped) != 1 {
+		t.Fatalf("skipped = %v", result.Skipped)
+	}
+	// The reason has to travel with the report: a host that receives an answer
+	// from a fallback must be able to see that the primary was passed over.
+	if !strings.Contains(result.Skipped[0], "cloud/gpt-5") ||
+		!strings.Contains(result.Skipped[0], "openai-chat") {
+		t.Fatalf("skipped = %v", result.Skipped)
+	}
+	if !strings.Contains(result.RenderText(), "skipped:  cloud/gpt-5") {
+		t.Fatalf("the text report hides the fallback:\n%s", result.RenderText())
+	}
+}
+
 func TestRunRefusesANonExecutableAgentType(t *testing.T) {
 	cfg := registryConfig(t, nil)
 	impl := &fakeProvider{

@@ -26,6 +26,7 @@ import (
 
 	"github.com/pawagents/pawagents/internal/apperrors"
 	"github.com/pawagents/pawagents/internal/llm"
+	"github.com/pawagents/pawagents/internal/provider"
 )
 
 // ndjsonStream converts the newline delimited JSON stream of /api/chat into
@@ -110,7 +111,7 @@ func (s *ndjsonStream) lineEvents(line *chatResponse) ([]llm.Event, error) {
 	}
 	if strings.TrimSpace(line.Error) != "" {
 		return nil, apperrors.New(apperrors.KindProvider, "provider.stream",
-			"the Ollama server reported an error mid-stream: %s", sanitize(line.Error))
+			"the Ollama server reported an error mid-stream: %s", provider.SanitizeMessage(line.Error))
 	}
 	if line.Model != "" {
 		s.model = line.Model

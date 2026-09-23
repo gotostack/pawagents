@@ -26,6 +26,7 @@ import (
 
 	"github.com/pawagents/pawagents/internal/apperrors"
 	"github.com/pawagents/pawagents/internal/llm"
+	"github.com/pawagents/pawagents/internal/provider"
 )
 
 // sseStream converts a Server-Sent Events response into protocol events.
@@ -174,7 +175,7 @@ func (s *sseStream) readDataLine() (string, error) {
 func (s *sseStream) chunkEvents(chunk *chatCompletion) ([]llm.Event, error) {
 	if chunk.Error != nil {
 		return nil, apperrors.New(apperrors.KindProvider, "provider.stream",
-			"the provider reported an error mid-stream: %s", sanitizeMessage(chunk.Error.Message))
+			"the provider reported an error mid-stream: %s", provider.SanitizeMessage(chunk.Error.Message))
 	}
 
 	var events []llm.Event
@@ -254,7 +255,7 @@ func completionEvents(completion *chatCompletion, model string) ([]llm.Event, er
 
 	if completion.Error != nil {
 		return nil, apperrors.New(apperrors.KindProvider, "provider.generate",
-			"the provider returned an error response: %s", sanitizeMessage(completion.Error.Message))
+			"the provider returned an error response: %s", provider.SanitizeMessage(completion.Error.Message))
 	}
 	if completion.Model != "" {
 		model = completion.Model
@@ -359,45 +360,4 @@ func toUsage(usage *chatUsage) llm.Usage {
 		converted.ReasoningTokens = usage.CompletionTokensDetails.ReasoningTokens
 	}
 	return converted
-}
-
-// bufferedStream replays a fixed event list and releases the request context
-// when it is closed. It is used for responses that arrive as a single JSON
-// document instead of an event stream.
-type bufferedStream struct {
-	events []llm.Event
-	index  int
-	cancel context.CancelFunc
-	body   io.ReadCloser
-	closed bool
-}
-
-func newBufferedStream(events []llm.Event, cancel context.CancelFunc, body io.ReadCloser) llm.Stream {
-	if cancel == nil {
-		cancel = func() {}
-	}
-	return &bufferedStream{events: events, cancel: cancel, body: body}
-}
-
-// Recv implements llm.Stream.
-func (s *bufferedStream) Recv() (llm.Event, error) {
-	if s.index >= len(s.events) {
-		return llm.Event{}, io.EOF
-	}
-	event := s.events[s.index]
-	s.index++
-	return event, nil
-}
-
-// Close implements llm.Stream.
-func (s *bufferedStream) Close() error {
-	if s.closed {
-		return nil
-	}
-	s.closed = true
-	s.cancel()
-	if s.body != nil {
-		return s.body.Close()
-	}
-	return nil
 }

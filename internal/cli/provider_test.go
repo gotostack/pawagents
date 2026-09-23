@@ -105,8 +105,8 @@ func TestProviderListText(t *testing.T) {
 	if !strings.Contains(lines["gateway"], "env:PAWAGENTS_TEST_GATEWAY_KEY") {
 		t.Fatalf("gateway line = %q, want the credential description", lines["gateway"])
 	}
-	if !strings.Contains(lines["cloud-anthropic"], providerStatusUnavailable) {
-		t.Fatalf("cloud-anthropic line = %q, want an unavailable status",
+	if !strings.Contains(lines["cloud-anthropic"], providerStatusReady) {
+		t.Fatalf("cloud-anthropic line = %q, want a ready status",
 			lines["cloud-anthropic"])
 	}
 	if !strings.Contains(lines["gemini"], "planned") {

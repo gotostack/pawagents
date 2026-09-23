@@ -21,6 +21,13 @@
 package all
 
 import (
+	// Anthropic Messages API, the native protocol of the Claude models.
+	_ "github.com/pawagents/pawagents/internal/provider/anthropic"
+
+	// OpenAI Responses API, the successor of Chat Completions on the OpenAI
+	// platform.
+	_ "github.com/pawagents/pawagents/internal/provider/openairesponses"
+
 	// OpenAI-compatible chat completions: DeepSeek, DashScope, OpenRouter,
 	// LiteLLM, vLLM, company gateways and Ollama's compatibility endpoint.
 	_ "github.com/pawagents/pawagents/internal/provider/openaicompat"

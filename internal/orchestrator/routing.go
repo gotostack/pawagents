@@ -126,6 +126,15 @@ func (o *Orchestrator) resolve(ctx context.Context, alias string, options resolv
 		providerType := instance.Type()
 		capabilities := provider.Resolve(providerType, modelCfg, &probe)
 
+		// A task that runs on a fallback is worth saying out loud: the answer
+		// came from a different model than the one the agent names first.
+		if len(skipped) > 0 {
+			o.logger.Warn("using a fallback model target",
+				slog.String("model_alias", alias),
+				slog.String("target", describeTarget(target)),
+				slog.Any("skipped", skipped))
+		}
+
 		return &binding{
 			Alias:        alias,
 			ProviderName: instance.Name(),
@@ -187,6 +196,23 @@ func skippedTarget(target config.ModelRef, err error) SkippedTarget {
 		reason = apperrors.Summary(err)
 	}
 	return SkippedTarget{Target: describeTarget(target), Reason: reason}
+}
+
+// describeSkipped renders skipped targets for a result envelope.
+func describeSkipped(skipped []SkippedTarget) []string {
+	if len(skipped) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(skipped))
+	for _, target := range skipped {
+		if target.Reason == "" {
+			out = append(out, target.Target)
+			continue
+		}
+		out = append(out, target.Target+" ("+target.Reason+")")
+	}
+	return out
 }
 
 // describeTargets renders a target list for an error message.

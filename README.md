@@ -39,6 +39,8 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Provider registry with lazy construction | Done |
 | OpenAI-compatible provider (chat completions, streaming, tools) | Done |
 | Native Ollama provider with capability detection | Done |
+| Native Anthropic Messages provider (tool use, streaming, reasoning) | Done |
+| OpenAI Responses provider (schema constrained output, reasoning) | Done |
 | `pagent provider list`, `pagent provider show`, `pagent provider test` | Done |
 | Workspace guard: traversal, symlink, blocked path and size enforcement | Done |
 | Read-only repository tools and git tools | Done |
@@ -301,9 +303,9 @@ this build, not the roadmap:
 | --- | --- |
 | `ollama` | Implemented (native API, capability detection, tool calls) |
 | `openai-compatible` | Implemented (Chat Completions, streaming, tools) |
-| `openai-responses` | Known, not implemented yet |
+| `anthropic` | Implemented (Messages API, native tool use, streaming) |
+| `openai-responses` | Implemented (Responses API, schema constrained output) |
 | `openai-chat` | Known, not implemented yet |
-| `anthropic` | Known, not implemented yet |
 | `gemini` | Roadmap, accepted with a warning |
 | `bedrock` | Roadmap, accepted with a warning |
 
@@ -440,6 +442,58 @@ Supported knobs: `base_url`, `api_key`, `api_key_env`, `headers`,
 `client_cert_file`, `client_key_file`, `server_name`, `insecure_skip_verify`).
 `extra_body` is merged into every request body, so a vendor specific flag never
 needs a code change; a per-request `extra` wins over it.
+
+### Anthropic
+
+The `anthropic` type speaks the Messages API natively rather than through a
+compatibility layer, because the protocol differs in ways that matter: content
+is a list of typed blocks, the system prompt is a top level field, a tool result
+travels back inside a user message, and a streaming answer reports its input
+tokens once at the start and its output tokens cumulatively.
+
+```yaml
+providers:
+  cloud-anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+```
+
+`base_url` defaults to `https://api.anthropic.com` and the credential is sent as
+`x-api-key`. Extended thinking is surfaced as reasoning text rather than mixed
+into the answer, and a reasoning trace is never replayed to the API: an
+unsigned thinking block cannot be sent back, and inventing a signature would be
+worse than dropping it.
+
+One honest limitation: the Messages API has no `response_format`, so
+`pagent agent show` reports `structured_output:no` for it. An agent with
+`output_mode: structured` still works — the runtime asks for the finding
+envelope in the prompt instead of constraining the completion, and a schema is
+never sent to an endpoint that would reject it.
+
+### OpenAI Responses
+
+The `openai-responses` type speaks the Responses API, where the conversation is
+a flat list of typed input items and a completion can be constrained by a JSON
+schema.
+
+```yaml
+providers:
+  cloud-openai:
+    type: openai-responses
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    organization: org_123
+```
+
+`store` is always sent as `false`. PawAgents is a read-only advisor that reads a
+workspace on behalf of a host agent; persisting the conversation in the vendor's
+account would be a side effect nobody asked for, and the session file is the
+record. Reasoning summaries arrive as reasoning text, cached input tokens and
+reasoning tokens are reported in the usage, and a schema is requested without
+strict mode: the API only accepts a strict schema in which every property is
+required and additional properties are forbidden, which the finding envelope is
+not.
 
 ### Using Ollama
 

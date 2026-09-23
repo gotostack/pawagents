@@ -269,7 +269,7 @@ func TestGenerateReportsProviderErrors(t *testing.T) {
 			name:     "model not found",
 			status:   http.StatusNotFound,
 			body:     `{"error":{"message":"model does not exist"}}`,
-			wantKind: apperrors.KindProvider,
+			wantKind: apperrors.KindNotFound,
 			want:     "model does not exist",
 		},
 		{
@@ -590,42 +590,6 @@ func TestToUsage(t *testing.T) {
 	}
 	if usage.CacheReadTokens != 64 || usage.ReasoningTokens != 5 {
 		t.Fatalf("usage details = %+v", usage)
-	}
-}
-
-func TestProviderMessageSanitisation(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want string
-	}{
-		{
-			name: "openai envelope",
-			body: `{"error":{"message":"line one\nline two"}}`,
-			want: "line one line two",
-		},
-		{name: "plain text", body: "boom\nmore", want: "boom"},
-		{name: "empty", body: "", want: ""},
-		{name: "whitespace", body: "   \n ", want: ""},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := providerMessage([]byte(test.body)); got != test.want {
-				t.Fatalf("providerMessage(%q) = %q, want %q", test.body, got, test.want)
-			}
-		})
-	}
-}
-
-func TestSanitizeMessageTruncatesLongText(t *testing.T) {
-	long := strings.Repeat("x", 1000)
-	got := providerMessage([]byte(long))
-	if len(got) > 410 {
-		t.Fatalf("len = %d, want the message to be truncated", len(got))
-	}
-	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("message = %q, want a truncation marker", got)
 	}
 }
 

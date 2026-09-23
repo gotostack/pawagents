@@ -19,7 +19,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -41,6 +40,10 @@ const (
 	showPath = "api/show"
 	// versionPath reports the server version.
 	versionPath = "api/version"
+
+	// ollamaHint explains the most common failure, which is a server that is
+	// not running at all.
+	ollamaHint = "is `ollama serve` running?"
 
 	// probeTimeout bounds the metadata calls, which are not generations.
 	probeTimeout = 15 * time.Second
@@ -94,14 +97,14 @@ func (p *Provider) Generate(ctx context.Context, request *llm.GenerateRequest) (
 	response, err := p.transport.Client.Do(httpRequest)
 	if err != nil {
 		cancel()
-		return nil, networkError("provider.generate", err)
+		return nil, provider.NetworkError("provider.generate", err, ollamaHint)
 	}
 
 	if response.StatusCode >= 400 {
-		body := readErrorBody(response)
+		body := provider.ReadErrorBody(response)
 		_ = response.Body.Close()
 		cancel()
-		return nil, httpStatusError("provider.generate", response, body)
+		return nil, provider.HTTPStatusError("provider.generate", response, body)
 	}
 
 	return newNDJSONStream(response, request.Model, p.logger, cancel), nil
@@ -325,18 +328,18 @@ func (p *Provider) fetchMetadata(ctx context.Context, model string) (modelMetada
 
 	response, err := p.transport.Client.Do(request)
 	if err != nil {
-		return modelMetadata{}, networkError("provider.metadata", err)
+		return modelMetadata{}, provider.NetworkError("provider.metadata", err, ollamaHint)
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode >= 400 {
-		raw := readErrorBody(response)
+		raw := provider.ReadErrorBody(response)
 		if response.StatusCode == http.StatusNotFound {
 			return modelMetadata{}, apperrors.New(apperrors.KindNotFound, "provider.metadata",
 				"model %q is not installed on provider %q; run `ollama pull %s`",
 				model, p.name, model).WithDetails(map[string]any{"model": model})
 		}
-		return modelMetadata{}, httpStatusError("provider.metadata", response, raw)
+		return modelMetadata{}, provider.HTTPStatusError("provider.metadata", response, raw)
 	}
 
 	var shown showResponse
@@ -421,12 +424,12 @@ func (p *Provider) fetchTags(ctx context.Context) ([]tagEntry, error) {
 
 	response, err := p.transport.Client.Do(request)
 	if err != nil {
-		return nil, networkError("provider.models", err)
+		return nil, provider.NetworkError("provider.models", err, ollamaHint)
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode >= 400 {
-		return nil, httpStatusError("provider.models", response, readErrorBody(response))
+		return nil, provider.HTTPStatusError("provider.models", response, provider.ReadErrorBody(response))
 	}
 
 	var tags tagsResponse
@@ -450,12 +453,12 @@ func (p *Provider) fetchVersion(ctx context.Context) (string, error) {
 
 	response, err := p.transport.Client.Do(request)
 	if err != nil {
-		return "", networkError("provider.health", err)
+		return "", provider.NetworkError("provider.health", err, ollamaHint)
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode >= 400 {
-		return "", httpStatusError("provider.health", response, readErrorBody(response))
+		return "", provider.HTTPStatusError("provider.health", response, provider.ReadErrorBody(response))
 	}
 
 	var version versionResponse
@@ -464,93 +467,6 @@ func (p *Provider) fetchVersion(ctx context.Context) (string, error) {
 			"the version response is not valid JSON", err)
 	}
 	return version.Version, nil
-}
-
-// readErrorBody reads a bounded error body.
-func readErrorBody(response *http.Response) []byte {
-	if response == nil || response.Body == nil {
-		return nil
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
-	if err != nil {
-		return nil
-	}
-	return body
-}
-
-// httpStatusError maps an HTTP failure onto the error model.
-func httpStatusError(op string, response *http.Response, body []byte) error {
-	status := response.StatusCode
-	message := providerMessage(body)
-	if message == "" {
-		message = http.StatusText(status)
-	}
-
-	details := map[string]any{"status": status}
-
-	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return apperrors.New(apperrors.KindAuthentication, op,
-			"the Ollama server rejected the credential (HTTP %d): %s", status, message).
-			WithDetails(details)
-	case status == http.StatusNotFound:
-		return apperrors.New(apperrors.KindNotFound, op,
-			"the Ollama endpoint or model was not found (HTTP %d): %s", status, message).
-			WithDetails(details)
-	case status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout:
-		return apperrors.New(apperrors.KindTimeout, op,
-			"the Ollama server timed out (HTTP %d): %s", status, message).WithDetails(details)
-	default:
-		return apperrors.New(apperrors.KindProvider, op,
-			"the Ollama server returned HTTP %d: %s", status, message).WithDetails(details)
-	}
-}
-
-// providerMessage extracts the human readable part of an error body.
-func providerMessage(body []byte) string {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return ""
-	}
-
-	var envelope errorResponse
-	if err := json.Unmarshal(trimmed, &envelope); err == nil && strings.TrimSpace(envelope.Error) != "" {
-		return sanitize(envelope.Error)
-	}
-
-	text := string(trimmed)
-	if index := strings.IndexByte(text, '\n'); index >= 0 {
-		text = text[:index]
-	}
-	if len(text) > 400 {
-		text = text[:400] + "..."
-	}
-	return sanitize(text)
-}
-
-// sanitize collapses whitespace so a multi-line message stays on one line.
-func sanitize(message string) string {
-	return strings.Join(strings.Fields(message), " ")
-}
-
-// networkError maps a transport failure onto the error model. A refused
-// connection to a local server usually means Ollama is not running, which the
-// message says explicitly.
-func networkError(op string, err error) error {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return apperrors.Wrap(apperrors.KindTimeout, op, "the Ollama request timed out", err)
-	case errors.Is(err, context.Canceled):
-		return apperrors.Wrap(apperrors.KindCancelled, op, "the Ollama request was cancelled", err)
-	}
-
-	var netErr interface{ Timeout() bool }
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return apperrors.Wrap(apperrors.KindTimeout, op, "the Ollama request timed out", err)
-	}
-
-	return apperrors.Wrap(apperrors.KindProvider, op,
-		"cannot reach the Ollama server; is `ollama serve` running?", err)
 }
 
 // newNDJSONStream wraps a streaming response.

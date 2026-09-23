@@ -132,6 +132,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 	if result != nil {
 		result.Provider = resolved.ProviderName
 		result.Model = resolved.Model
+		result.Skipped = describeSkipped(resolved.Skipped)
 	}
 	return result, err
 }

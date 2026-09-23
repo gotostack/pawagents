@@ -56,10 +56,8 @@ providers:
     type: openai-compatible
     base_url: %s/v1
     api_key: sk-test
-  cloud-anthropic:
-    type: anthropic
-    base_url: https://api.anthropic.com
-    api_key_env: PAWAGENTS_TEST_ANTHROPIC_KEY
+  cloud-gemini:
+    type: gemini
   gemini:
     type: gemini
   switched-off:
@@ -74,8 +72,8 @@ models:
     model: fake-model
   with-fallback:
     primary:
-      provider: cloud-anthropic
-      model: claude-sonnet
+      provider: cloud-gemini
+      model: gemini-2.5-pro
     fallback:
       - provider: local-ollama
         model: qwen3-coder
@@ -319,10 +317,10 @@ func TestAgentShowReportsASkippedPrimaryTarget(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %s", code, stderr)
 	}
 
-	// The anthropic provider is not part of this build, so the alias is served
-	// by its fallback; the report has to say which target answers and why the
+	// The gemini provider is on the roadmap only, so the alias is served by
+	// its fallback; the report has to say which target answers and why the
 	// other one did not.
-	if !strings.Contains(stdout, "skipped:    cloud-anthropic/claude-sonnet") {
+	if !strings.Contains(stdout, "skipped:    cloud-gemini/gemini-2.5-pro") {
 		t.Fatalf("the skipped primary was not reported:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "target:     local-ollama/qwen3-coder") {
@@ -395,9 +393,9 @@ func TestModelListTextOutput(t *testing.T) {
 		!strings.Contains(line, provider.StatusReady) || !strings.Contains(line, "file-reviewer") {
 		t.Fatalf("local-coder row = %q", line)
 	}
-	// The anthropic provider is not compiled into this build, so the alias can
+	// The gemini provider is not compiled into this build, so the alias can
 	// only be served by its fallback, which makes it ready anyway.
-	if line := lines["with-fallback"]; !strings.Contains(line, "cloud-anthropic/claude-sonnet") ||
+	if line := lines["with-fallback"]; !strings.Contains(line, "cloud-gemini/gemini-2.5-pro") ||
 		!strings.Contains(line, provider.StatusReady) || !strings.Contains(line, "1") {
 		t.Fatalf("with-fallback row = %q", line)
 	}
@@ -450,9 +448,9 @@ func TestModelShowDescribesTargetsAndAgents(t *testing.T) {
 
 	for _, want := range []string{
 		"alias:       with-fallback",
-		"primary: cloud-anthropic/claude-sonnet",
+		"primary: cloud-gemini/gemini-2.5-pro",
 		"fallback 1: local-ollama/qwen3-coder",
-		"status: " + provider.StatusUnavailable,
+		"status: planned",
 		"status: " + provider.StatusReady,
 		"Agents",
 		"inline-reviewer",

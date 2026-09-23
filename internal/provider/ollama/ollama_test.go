@@ -352,15 +352,3 @@ func TestMapDoneReason(t *testing.T) {
 		}
 	}
 }
-
-func TestProviderMessage(t *testing.T) {
-	if got := providerMessage([]byte(`{"error":"model not found"}`)); got != "model not found" {
-		t.Fatalf("providerMessage() = %q", got)
-	}
-	if got := providerMessage([]byte("boom\nsecond line")); got != "boom" {
-		t.Fatalf("providerMessage() = %q", got)
-	}
-	if got := providerMessage(nil); got != "" {
-		t.Fatalf("providerMessage(nil) = %q", got)
-	}
-}
