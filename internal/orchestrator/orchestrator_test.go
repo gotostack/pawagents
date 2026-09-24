@@ -99,6 +99,11 @@ func toolCallEvents(calls ...llm.ToolCall) []llm.Event {
 func testConfig(t *testing.T, mutate func(cfg *config.Config)) *config.Config {
 	t.Helper()
 
+	// Sessions are part of every run, so the tests keep them inside a temporary
+	// home instead of the real one.
+	t.Setenv(config.EnvHome, t.TempDir())
+	t.Setenv(config.EnvSessionsDir, "")
+
 	cfg := &config.Config{
 		Providers: map[string]*config.Provider{
 			"local": {Type: config.ProviderTypeOllama, BaseURL: "http://127.0.0.1:11434"},

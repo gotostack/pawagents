@@ -53,8 +53,29 @@ type RunnerOptions struct {
 	MaxOutputTokens int
 	// Temperature is the model sampling temperature, when configured.
 	Temperature *float64
+	// Compactor reduces a conversation that outgrows the context window. Nil
+	// selects the built-in elision strategy.
+	Compactor Compactor
+	// Recorder receives the events of the task, for example a session record.
+	// Nil means the task is not recorded.
+	Recorder Recorder
 	// Logger receives loop diagnostics.
 	Logger *slog.Logger
+}
+
+// Recorder receives the events of one task.
+//
+// The loop defines the interface it depends on, so that recording a task does
+// not make the agent package depend on a store, a file format or a session.
+// Every call is advisory: the runtime keeps working when a recorder fails or is
+// absent.
+type Recorder interface {
+	// Message records one conversation turn.
+	Message(message llm.Message)
+	// ToolCall records one tool call and its result.
+	ToolCall(call llm.ToolCall, result llm.ToolResult)
+	// Compaction records that the conversation was reduced.
+	Compaction(report CompactionReport)
 }
 
 // Runner executes one delegated task against one model.
@@ -70,6 +91,13 @@ type Runner struct {
 	// enforceSchema reports whether the provider can constrain the answer to
 	// a JSON schema, as opposed to being asked for JSON in the prompt.
 	enforceSchema bool
+	// compactor reduces the conversation when it outgrows the window.
+	compactor Compactor
+	// recorder receives the events of the task, never nil.
+	recorder Recorder
+	// compactionSummary is the note left by the last compaction. It is part of
+	// the system prompt, so that every later request carries it.
+	compactionSummary string
 }
 
 // NewRunner validates the agent against the model and builds a runner.
@@ -99,6 +127,14 @@ func NewRunner(options RunnerOptions) (*Runner, error) {
 		hasTools:      options.Profile.Grant != nil && !options.Profile.Grant.Empty(),
 		structured:    options.Profile.OutputMode != OutputText,
 		enforceSchema: false,
+		compactor:     options.Compactor,
+		recorder:      options.Recorder,
+	}
+	if runner.compactor == nil {
+		runner.compactor = ElisionCompactor{}
+	}
+	if runner.recorder == nil {
+		runner.recorder = nopRecorder{}
 	}
 
 	if runner.structured {
@@ -184,6 +220,9 @@ func (r *Runner) Run(ctx context.Context, task Task) (*Result, error) {
 // a tool, or a budget stops it.
 func (r *Runner) loop(ctx context.Context, task Task) (string, Usage, error) {
 	messages := r.initialMessages(task)
+	for _, message := range messages {
+		r.recorder.Message(message)
+	}
 	usage := Usage{}
 
 	for round := 1; ; round++ {
@@ -195,7 +234,7 @@ func (r *Runner) loop(ctx context.Context, task Task) (string, Usage, error) {
 				"the agent reached its %d round limit", r.options.Budget.MaxRounds)
 		}
 
-		messages = r.fitContext(messages, &usage)
+		messages = r.fitContext(messages)
 		request := r.buildRequest(messages)
 
 		response, err := r.generate(ctx, request)
@@ -209,6 +248,7 @@ func (r *Runner) loop(ctx context.Context, task Task) (string, Usage, error) {
 			OutputTokens: response.Usage.OutputTokens,
 		})
 		messages = append(messages, response.Message)
+		r.recorder.Message(response.Message)
 
 		if !response.HasToolCalls() {
 			return response.Text(), usage, nil
@@ -287,10 +327,21 @@ func (r *Runner) executeTools(ctx context.Context, calls []llm.ToolCall, usage *
 			return nil, err
 		}
 		usage.ToolCalls++
+
+		// The result is recorded before it is trimmed to the budget, so that a
+		// session shows what the tool actually returned.
+		r.recorder.ToolCall(call, result)
 		messages = append(messages, llm.NewToolResultMessage(r.limitToolOutput(result)))
 	}
 	return messages, nil
 }
+
+// nopRecorder discards events when no recorder was configured.
+type nopRecorder struct{}
+
+func (nopRecorder) Message(llm.Message)                   {}
+func (nopRecorder) ToolCall(llm.ToolCall, llm.ToolResult) {}
+func (nopRecorder) Compaction(CompactionReport)           {}
 
 // limitToolOutput enforces the per-call output budget.
 //
@@ -339,18 +390,23 @@ func (r *Runner) buildRequest(messages []llm.Message) *llm.GenerateRequest {
 
 // initialMessages builds the conversation a task starts from.
 func (r *Runner) initialMessages(task Task) []llm.Message {
-	system := buildSystemPrompt(r.options.Profile, promptOptions{
-		hasTools:   r.hasTools,
-		structured: r.structured,
-	})
 	return []llm.Message{
-		llm.NewSystemMessage(system),
+		llm.NewSystemMessage(r.systemPrompt()),
 		llm.NewUserMessage(buildUserMessage(task)),
 	}
 }
 
+// systemPrompt assembles the system message, including the note a compaction
+// left behind.
+func (r *Runner) systemPrompt() string {
+	return buildSystemMessage(r.options.Profile, promptOptions{
+		hasTools:   r.hasTools,
+		structured: r.structured,
+	}, r.compactionSummary)
+}
+
 // fitContext compacts the conversation when it no longer fits the window.
-func (r *Runner) fitContext(messages []llm.Message, usage *Usage) []llm.Message {
+func (r *Runner) fitContext(messages []llm.Message) []llm.Message {
 	window := r.options.Budget.MaxContextTokens
 	if window <= 0 {
 		window = r.options.Capabilities.MaxContextTokens
@@ -359,17 +415,33 @@ func (r *Runner) fitContext(messages []llm.Message, usage *Usage) []llm.Message 
 		return messages
 	}
 
-	before := estimateTokens(messages)
-	compacted, changed := compact(messages)
-	if !changed {
-		return compacted
+	result, err := r.compactor.Compact(messages, CompactionOptions{Window: window})
+	if err != nil {
+		r.logger.Warn("context compaction failed; continuing with the full conversation",
+			slog.String("agent", r.options.Profile.Name),
+			slog.String("error", err.Error()))
+		return messages
+	}
+	if !result.Report.Changed {
+		return result.Messages
 	}
 
-	after := estimateTokens(compacted)
-	r.logger.Debug(compactionNotice(before, after),
+	r.compactionSummary = result.Report.Summary
+	r.recorder.Compaction(result.Report)
+	r.logger.Debug("context compacted",
 		slog.String("agent", r.options.Profile.Name),
-		slog.Int("before_tokens", before),
-		slog.Int("after_tokens", after))
+		slog.Int("elided", result.Report.Elided),
+		slog.Int("before_tokens", result.Report.BeforeTokens),
+		slog.Int("after_tokens", result.Report.AfterTokens))
+
+	// The system prompt carries the summary of what was compacted, so the
+	// conversation itself only has to change where content was removed.
+	compacted := result.Messages
+	if len(compacted) > 0 && compacted[0].Role == llm.RoleSystem {
+		compacted = make([]llm.Message, len(result.Messages))
+		copy(compacted, result.Messages)
+		compacted[0] = llm.NewSystemMessage(r.systemPrompt())
+	}
 	return compacted
 }
 

@@ -163,6 +163,8 @@ func newTestRunner(t *testing.T, model *scriptedModel, options runnerTestOptions
 		Executor:        executor,
 		Budget:          budget,
 		MaxOutputTokens: 1024,
+		Compactor:       options.compactor,
+		Recorder:        options.recorder,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
@@ -177,6 +179,8 @@ type runnerTestOptions struct {
 	budget           Budget
 	toolOutput       string
 	toolErr          error
+	compactor        Compactor
+	recorder         Recorder
 }
 
 func TestRunnerReturnsATextAnswer(t *testing.T) {
@@ -802,12 +806,15 @@ func TestCompactKeepsShortConversations(t *testing.T) {
 		llm.NewAssistantMessage(strings.Repeat("x", 5000)),
 	}
 
-	compacted, changed := compact(messages)
-	if changed {
+	result, err := ElisionCompactor{}.Compact(messages, CompactionOptions{})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if result.Report.Changed {
 		t.Fatalf("a short conversation must not be compacted")
 	}
-	if len(compacted) != len(messages) {
-		t.Fatalf("messages = %d", len(compacted))
+	if len(result.Messages) != len(messages) {
+		t.Fatalf("messages = %d", len(result.Messages))
 	}
 }
 
@@ -818,31 +825,160 @@ func TestCompactElidesLargeToolOutput(t *testing.T) {
 	}
 	for i := 0; i < 10; i++ {
 		messages = append(messages, llm.NewAssistantToolCallMessage(
-			llm.ToolCall{ID: "call", Name: "repo.read", Arguments: `{}`}))
+			llm.ToolCall{ID: "call", Name: "repo.read", Arguments: `{"path":"internal/agent/loop.go"}`}))
 		messages = append(messages, llm.NewToolResultMessage(llm.ToolResult{
 			ToolCallID: "call",
 			Name:       "repo.read",
-			Content:    strings.Repeat("data ", 1000),
+			Content:    "package agent\n" + strings.Repeat("data ", 1000),
 		}))
 	}
 
-	compacted, changed := compact(messages)
-	if !changed {
+	result, err := ElisionCompactor{}.Compact(messages, CompactionOptions{})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !result.Report.Changed {
 		t.Fatalf("a long conversation must be compacted")
 	}
-	if len(compacted) != len(messages) {
-		t.Fatalf("compaction must preserve the message count, got %d", len(compacted))
+	if len(result.Messages) != len(messages) {
+		t.Fatalf("compaction must preserve the message count, got %d", len(result.Messages))
 	}
-	if estimateTokens(compacted) >= estimateTokens(messages) {
+	if estimateTokens(result.Messages) >= estimateTokens(messages) {
 		t.Fatalf("compaction must reduce the estimate")
+	}
+	if result.Report.Elided == 0 || result.Report.AfterTokens >= result.Report.BeforeTokens {
+		t.Fatalf("report = %+v", result.Report)
 	}
 
 	// The most recent exchanges stay intact so the model can continue.
-	for _, message := range compacted[len(compacted)-keepRecentMessages:] {
+	for _, message := range result.Messages[len(result.Messages)-DefaultKeepRecent:] {
 		if message.ToolResult != nil && strings.Contains(message.ToolResult.Content, "elided") {
 			t.Fatalf("a recent tool result was elided")
 		}
 	}
+
+	// The marker keeps enough context for the model to decide whether to look
+	// again: which tool, how much it returned and how it started.
+	marker := result.Messages[3].ToolResult.Content
+	for _, want := range []string{"repo.read", "KiB", "it began with: package agent"} {
+		if !strings.Contains(marker, want) {
+			t.Fatalf("the marker is missing %q: %s", want, marker)
+		}
+	}
+}
+
+func TestCompactSummaryDescribesTheWorkSoFar(t *testing.T) {
+	messages := []llm.Message{
+		llm.NewSystemMessage("system"),
+		llm.NewUserMessage("task"),
+	}
+	for i := 0; i < 5; i++ {
+		messages = append(messages, llm.NewAssistantToolCallMessage(
+			llm.ToolCall{ID: "call", Name: "repo.read", Arguments: `{"path":"internal/agent/loop.go"}`},
+			llm.ToolCall{ID: "call", Name: "git.diff", Arguments: `{}`},
+		))
+		messages = append(messages, llm.NewToolResultMessage(llm.ToolResult{
+			ToolCallID: "call",
+			Name:       "repo.read",
+			Content:    strings.Repeat("data ", 2000),
+		}))
+	}
+
+	result, err := ElisionCompactor{}.Compact(messages, CompactionOptions{})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !result.Report.Changed {
+		t.Fatalf("the conversation must be compacted")
+	}
+
+	summary := result.Report.Summary
+	for _, want := range []string{
+		"Compacted history",
+		"repo.read (5)",
+		"git.diff (5)",
+		"internal/agent/loop.go",
+		"do not guess",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("the summary is missing %q:\n%s", want, summary)
+		}
+	}
+}
+
+func TestCompactRespectsTheElideThreshold(t *testing.T) {
+	messages := []llm.Message{
+		llm.NewSystemMessage("system"),
+		llm.NewUserMessage("task"),
+	}
+	for i := 0; i < 10; i++ {
+		messages = append(messages, llm.NewAssistantToolCallMessage(
+			llm.ToolCall{ID: "call", Name: "repo.stat", Arguments: `{}`}))
+		messages = append(messages, llm.NewToolResultMessage(llm.ToolResult{
+			ToolCallID: "call",
+			Name:       "repo.stat",
+			Content:    "small result",
+		}))
+	}
+
+	result, err := ElisionCompactor{}.Compact(messages, CompactionOptions{ElideThreshold: 4})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !result.Report.Changed || result.Report.Elided == 0 {
+		t.Fatalf("a low threshold must elide small results: %+v", result.Report)
+	}
+
+	// With the default threshold nothing is large enough to elide.
+	result, err = ElisionCompactor{}.Compact(messages, CompactionOptions{})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if result.Report.Changed {
+		t.Fatalf("small results are the evidence a finding cites: %+v", result.Report)
+	}
+}
+
+// failingCompactor always fails, to prove the loop keeps going.
+type failingCompactor struct{}
+
+func (failingCompactor) Compact([]llm.Message, CompactionOptions) (CompactionResult, error) {
+	return CompactionResult{}, errors.New("summariser unavailable")
+}
+
+// recordingCompactor records what the loop asked for.
+type recordingCompactor struct {
+	calls  int
+	report CompactionReport
+	window int
+}
+
+func (c *recordingCompactor) Compact(messages []llm.Message, options CompactionOptions) (CompactionResult, error) {
+	c.calls++
+	c.window = options.Window
+	c.report = CompactionReport{
+		Elided:       2,
+		BeforeTokens: 9000,
+		AfterTokens:  3000,
+		Summary:      "## Compacted history\n\nnothing important",
+		Changed:      true,
+	}
+	return CompactionResult{Messages: messages, Report: c.report}, nil
+}
+
+// recordingRecorder collects the events the loop emitted.
+type recordingRecorder struct {
+	messages    []llm.Message
+	toolCalls   int
+	compactions []CompactionReport
+}
+
+func (r *recordingRecorder) Message(message llm.Message) { r.messages = append(r.messages, message) }
+func (r *recordingRecorder) ToolCall(llm.ToolCall, llm.ToolResult) {
+	r.toolCalls++
+}
+func (r *recordingRecorder) Compaction(report CompactionReport) {
+	r.compactions = append(r.compactions, report)
 }
 
 func TestEstimateAndFitHelpers(t *testing.T) {
@@ -861,6 +997,94 @@ func TestEstimateAndFitHelpers(t *testing.T) {
 	}
 	if fitsContext([]llm.Message{llm.NewSystemMessage(strings.Repeat("x", 8000))}, 100) {
 		t.Fatalf("a large conversation does not fit a small window")
+	}
+
+	// Compaction starts below the window edge, leaving room for the answer and
+	// for the tool definitions the estimate does not count.
+	window := 1000
+	exact := int(float64(window) * CompactionThreshold)
+	small := []llm.Message{llm.NewSystemMessage(strings.Repeat("x", (exact-100)*4))}
+	if !fitsContext(small, window) {
+		t.Fatalf("a conversation below the threshold must fit: %d tokens", estimateTokens(small))
+	}
+	large := []llm.Message{llm.NewSystemMessage(strings.Repeat("x", (exact+100)*4))}
+	if fitsContext(large, window) {
+		t.Fatalf("a conversation above the threshold must not fit: %d tokens", estimateTokens(large))
+	}
+}
+
+func TestRunnerRebuildsTheSystemPromptWithTheSummary(t *testing.T) {
+	model := &scriptedModel{
+		name:         "test",
+		capabilities: testCapabilities(),
+		scripts: [][]llm.Event{
+			toolCallEvents(llm.Usage{}, llm.ToolCall{ID: "1", Name: "repo.read", Arguments: `{}`}),
+			answerEvents("done", llm.Usage{}),
+		},
+	}
+
+	compactor := &recordingCompactor{}
+	recorder := &recordingRecorder{}
+
+	// A window small enough that the conversation has to be compacted even on
+	// the first round: the point is the wiring, not the arithmetic.
+	runner, _ := newTestRunner(t, model, runnerTestOptions{
+		budget:    Budget{MaxRounds: 4, MaxContextTokens: 200},
+		compactor: compactor,
+		recorder:  recorder,
+	})
+
+	result, err := runner.Run(context.Background(), Task{Instruction: "Review"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q", result.Status)
+	}
+
+	if compactor.calls == 0 {
+		t.Fatalf("the compactor was never asked")
+	}
+	if compactor.window != 200 {
+		t.Fatalf("the compactor was given window %d", compactor.window)
+	}
+	if len(recorder.compactions) != compactor.calls {
+		t.Fatalf("compactions = %d, want %d", len(recorder.compactions), compactor.calls)
+	}
+
+	// The later request must carry the summary of what was compacted.
+	last := model.requests[len(model.requests)-1]
+	if !strings.Contains(last.Messages[0].Text(), "Compacted history") {
+		t.Fatalf("the system prompt was not rebuilt:\n%s", last.Messages[0].Text())
+	}
+	// And the transcript must contain the task, the assistant turn and the
+	// tool result.
+	if len(recorder.messages) < 4 {
+		t.Fatalf("recorded messages = %d", len(recorder.messages))
+	}
+	if recorder.toolCalls != 1 {
+		t.Fatalf("recorded tool calls = %d", recorder.toolCalls)
+	}
+}
+
+func TestRunnerSurvivesAFailingCompactor(t *testing.T) {
+	model := &scriptedModel{
+		name:         "test",
+		capabilities: testCapabilities(),
+		scripts:      [][]llm.Event{answerEvents("done", llm.Usage{})},
+	}
+
+	runner, _ := newTestRunner(t, model, runnerTestOptions{
+		budget:    Budget{MaxRounds: 2, MaxContextTokens: 100},
+		compactor: failingCompactor{},
+	})
+
+	result, err := runner.Run(context.Background(), Task{Instruction: "Review"})
+	if err != nil {
+		t.Fatalf("a failing summariser must not fail the task: %v", err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q", result.Status)
 	}
 }
 

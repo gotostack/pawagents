@@ -34,12 +34,14 @@ import (
 	"github.com/pawagents/pawagents/internal/config"
 	"github.com/pawagents/pawagents/internal/provider"
 	"github.com/pawagents/pawagents/internal/security"
+	"github.com/pawagents/pawagents/internal/session"
 )
 
 // Orchestrator runs agents against a loaded configuration.
 type Orchestrator struct {
 	cfg      *config.Config
 	registry *provider.Registry
+	sessions *session.Store
 	logger   *slog.Logger
 }
 
@@ -56,8 +58,42 @@ func New(cfg *config.Config, registry *provider.Registry, logger *slog.Logger) (
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Orchestrator{cfg: cfg, registry: registry, logger: logger}, nil
+
+	// The store is built here so that a misconfigured sessions directory is
+	// reported once, but it touches no disk until a task is recorded: a command
+	// that never delegates anything leaves no trace.
+	store, err := NewSessionStore(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Orchestrator{cfg: cfg, registry: registry, sessions: store, logger: logger}, nil
 }
+
+// NewSessionStore builds the session store described by the configuration.
+//
+// It is exported so that the read-only session commands can inspect recorded
+// sessions without building a provider registry, and so that the mapping from
+// configuration to store options lives in exactly one place.
+func NewSessionStore(cfg *config.Config, logger *slog.Logger) (*session.Store, error) {
+	if cfg == nil {
+		return nil, apperrors.New(apperrors.KindInternal, "orchestrator.new_session_store",
+			"the session store needs a configuration")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return session.NewStore(session.Options{
+		Directory:        cfg.Sessions.Directory,
+		PersistMessages:  cfg.Sessions.ShouldPersistMessages(),
+		PersistToolCalls: cfg.Sessions.ShouldPersistToolCalls(),
+		Retention:        cfg.Sessions.Retention,
+		Logger:           logger,
+	})
+}
+
+// Sessions returns the session store.
+func (o *Orchestrator) Sessions() *session.Store { return o.sessions }
 
 // Config returns the configuration the orchestrator was built from.
 func (o *Orchestrator) Config() *config.Config { return o.cfg }

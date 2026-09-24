@@ -154,6 +154,9 @@ func (r *Result) RenderText() string {
 	for _, skipped := range r.Skipped {
 		fmt.Fprintf(&b, "skipped:  %s\n", skipped)
 	}
+	if r.SessionID != "" {
+		fmt.Fprintf(&b, "session:  %s\n", r.SessionID)
+	}
 	if r.Error != "" {
 		fmt.Fprintf(&b, "error:    %s\n", r.Error)
 	}

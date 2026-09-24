@@ -33,6 +33,11 @@ import (
 func registryConfig(t *testing.T, mutate func(cfg *config.Config)) *config.Config {
 	t.Helper()
 
+	// Sessions are part of every run, so the tests keep them inside a temporary
+	// home instead of the real one.
+	t.Setenv(config.EnvHome, t.TempDir())
+	t.Setenv(config.EnvSessionsDir, "")
+
 	directory := t.TempDir()
 	promptPath := filepath.Join(directory, "reviewer.md")
 	if err := os.WriteFile(promptPath, []byte("Review the diff and report findings."), 0o600); err != nil {

@@ -174,13 +174,28 @@ func estimateTextTokens(text string) int {
 // fitsContext reports whether the conversation fits the usable part of the
 // context window.
 //
-// The usable part is deliberately below the full window: the model still has to
-// produce an answer, and tool definitions take space that the estimate does not
-// count.
+// Compaction starts at CompactionThreshold of the window rather than at its
+// edge, because the estimate does not count the tool definitions and because the
+// model still has to produce an answer inside the same window.
 func fitsContext(messages []llm.Message, contextTokens int) bool {
 	if contextTokens <= 0 {
 		return true
 	}
-	usable := contextTokens - contextTokens/4
+	usable := int(float64(contextTokens) * CompactionThreshold)
 	return estimateTokens(messages) <= usable
+}
+
+// buildSystemMessage assembles the system message, including the note a
+// compaction left behind.
+func buildSystemMessage(profile Profile, options promptOptions, compactionSummary string) string {
+	system := buildSystemPrompt(profile, options)
+	if strings.TrimSpace(compactionSummary) == "" {
+		return system
+	}
+
+	// The summary goes into the system prompt rather than into a message of its
+	// own: providers disagree about consecutive messages of the same role, and
+	// a system prompt is the one place every protocol accepts additional
+	// context.
+	return system + "\n" + strings.TrimSpace(compactionSummary) + "\n"
 }

@@ -18,13 +18,16 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/pawagents/pawagents/internal/agent"
 	"github.com/pawagents/pawagents/internal/apperrors"
 	"github.com/pawagents/pawagents/internal/config"
 	"github.com/pawagents/pawagents/internal/security"
+	"github.com/pawagents/pawagents/internal/session"
 	"github.com/pawagents/pawagents/internal/tools"
 	"github.com/pawagents/pawagents/internal/tools/builtin"
+	"github.com/pawagents/pawagents/internal/version"
 )
 
 // Run resolves a request, configures an agent and runs one task.
@@ -90,6 +93,10 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 	if err != nil {
 		return nil, err
 	}
+	workspacePath := ""
+	if workspace != nil {
+		workspacePath = workspace.Path()
+	}
 	defer func() {
 		if workspace != nil {
 			_ = workspace.Close()
@@ -98,6 +105,16 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 
 	profile.OutputMode = outputModeOf(agentCfg, request.OutputMode)
 	runtime := runtimeProfile(profile, systemPrompt, grant)
+
+	// The session starts before the first model call, so that a task which is
+	// interrupted still leaves its agent, model and workspace on disk. A nil
+	// session must stay a nil interface: a typed nil would panic the first time
+	// the loop records something.
+	record := o.startSession(profile, runtime, budget, workspacePath)
+	var recorder agent.Recorder
+	if record != nil {
+		recorder = record
+	}
 
 	runner, err := agent.NewRunner(agent.RunnerOptions{
 		Profile:         runtime,
@@ -108,6 +125,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 		Budget:          budget,
 		MaxOutputTokens: outputTokenLimit(resolved.Capabilities),
 		Temperature:     temperatureOf(resolved.ModelConfig),
+		Recorder:        recorder,
 		Logger:          o.logger,
 	})
 	if err != nil {
@@ -133,8 +151,71 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (*agent.Result,
 		result.Provider = resolved.ProviderName
 		result.Model = resolved.Model
 		result.Skipped = describeSkipped(resolved.Skipped)
+		// The identifier is reported to the host, so that the caller can hand
+		// it back to `pagent session show` without searching the store.
+		if record != nil {
+			result.SessionID = record.ID()
+		}
 	}
+
+	o.finishSession(record, result)
 	return result, err
+}
+
+// startSession opens the record of a task.
+//
+// A store that cannot be written is reported and the task runs anyway: losing
+// an audit trail is bad, but refusing to answer because a disk is full is
+// worse, and the warning says exactly what happened.
+func (o *Orchestrator) startSession(
+	profile AgentProfile,
+	runtime agent.Profile,
+	budget agent.Budget,
+	workspace string,
+) *session.Session {
+	if o.sessions == nil {
+		return nil
+	}
+
+	record, err := o.sessions.Start(session.Meta{
+		Agent:      runtime.Name,
+		ModelAlias: profile.ModelAlias,
+		Workspace:  workspace,
+		OutputMode: runtime.OutputMode,
+		Status:     session.StatusRunning,
+		StartedAt:  time.Now(),
+		Version:    version.Info().Version,
+		Tools:      runtime.Tools,
+		MaxRounds:  budget.MaxRounds,
+	})
+	if err != nil {
+		o.logger.Warn("the task will not be recorded",
+			slog.String("agent", runtime.Name),
+			slog.String("error", err.Error()))
+		return nil
+	}
+
+	o.logger.Debug("recording the task",
+		slog.String("agent", runtime.Name),
+		slog.String("session", record.ID()),
+		slog.String("directory", record.Directory()))
+	return record
+}
+
+// finishSession closes the record with the outcome of the task.
+func (o *Orchestrator) finishSession(record *session.Session, result *agent.Result) {
+	if record == nil {
+		return
+	}
+
+	if result != nil {
+		record.SetModel(result.Provider, result.Model)
+	}
+	if err := record.Finish(result); err != nil {
+		o.logger.Warn("the session record is incomplete",
+			slog.String("session", record.ID()),
+			slog.String("error", err.Error()))
+	}
 }
 
 // agentConfig looks up an agent and reports a helpful error when it is missing.

@@ -48,12 +48,15 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Orchestrator: agent profile, model routing, capability validation, grant | Done |
 | `pagent run` | Done |
 | Agent and model registry commands with offline capability checks | Done |
+| Session persistence: `pagent session list`, `pagent session show` | Done |
+| Context compaction with a deterministic summary | Done |
 | MCP server, Codex and Claude Code integration | Planned |
 
 **Not implemented yet** — do not expect these to work:
 
-`pagent doctor`, `pagent session …`, `pagent mcp serve`. They are described in
-the roadmap below, and each one is documented here as soon as it lands.
+`pagent doctor`, `pagent mcp serve`, `pagent session continue`. They are
+described in the roadmap below, and each one is documented here as soon as it
+lands.
 
 ---
 
@@ -122,7 +125,7 @@ The six concepts PawAgents keeps strictly separate:
 | **Model** | An alias such as `strong-coder`, bound to a provider target. |
 | **Provider** | The wire protocol and endpoint: OpenAI, Anthropic, OpenAI-compatible, Ollama. |
 | **Tool** | A capability granted to an agent, e.g. `repo.search` or `git.diff`. |
-| **Session** | The persisted record of one delegated task, replayable and continuable. |
+| **Session** | The persisted record of one delegated task: what was asked, what was read, what it cost and what it answered. |
 
 ---
 
@@ -204,6 +207,8 @@ only runs a local model is never blocked.
 | `pagent agent list` | List the agent profiles, their model, tools, budget and output mode. |
 | `pagent agent show <agent>` | Describe one agent and whether its model can run it. `--probe` asks the endpoint. |
 | `pagent run` | Run one task with a configured agent and print the structured result. |
+| `pagent session list` | List the recorded sessions, newest first. `--output text\|json`. |
+| `pagent session show <id>` | Describe one recorded session. `--messages` adds the transcript. |
 
 Global flags:
 
@@ -612,6 +617,61 @@ can be handled by a script without parsing prose. Structured output is a
 *request*: PawAgents binds the model to a JSON schema when the provider can
 enforce one, and otherwise asks for the envelope in the prompt. An empty finding
 list is a valid answer.
+
+---
+
+## Sessions
+
+Every delegated task is recorded, so a result can be re-read after the machine
+that produced it is gone. `pagent run` prints the identifier, and `pagent
+session list` finds it again:
+
+```bash
+pagent session list
+pagent session show agt_5ccd1911c434718d --messages
+```
+
+A session is a directory under `sessions.directory`
+(`~/.pawagents/sessions` by default):
+
+| File | Contents |
+| --- | --- |
+| `metadata.json` | Identity and outcome: agent, model alias, resolved provider and model, workspace, status, timestamps, usage, counters, build version. |
+| `result.json` | The structured result envelope the host agent received. |
+| `messages.jsonl` | One conversation turn per line, plus one line per compaction. Images are recorded by MIME type, size and URL — their bytes are never copied. |
+| `tools.jsonl` | One line per tool call: tool, arguments, size, duration, whether it failed and how. |
+
+`metadata.json` is written **before** the first model call and rewritten when
+the task finishes, so an interrupted run stays visible with the status
+`running` instead of disappearing. Messages and tool calls share one sequence
+counter, so the two files merge into a single timeline. Records of a session
+are append-only; `result.json` and `metadata.json` are replaced atomically, so
+a reader never sees half a document. `sessions.retention` keeps the newest N
+sessions and prunes the rest when a task finishes; `0` means unlimited.
+`persist_messages: false` and `persist_tool_calls: false` keep the metadata and
+the result but write no transcript, for deployments that must not keep one.
+
+### Context compaction
+
+Delegations can outgrow a context window: a dozen tool calls on a large file
+are enough. Before a request, the runner estimates the size of the
+conversation and, once it passes **70 %** of the model's window, compacts it
+instead of failing:
+
+- the system message, the delegated task and the last six messages are kept;
+- a tool result larger than 2000 characters is replaced by a placeholder that
+  names the tool, its size and the first line, and tells the model to call the
+  tool again with a narrower request;
+- a long assistant message without tool calls is replaced by a marker.
+
+The model is then told what happened: a short deterministic summary — how many
+results were elided, which tools were used, which paths were seen — is appended
+to the system prompt, so it knows that history was reduced and that it must not
+guess at what it can no longer see. The summary is deterministic because a
+paraphrase costs a model call that the compaction is trying to avoid. Every
+compaction is recorded in the transcript. The result envelope reports the
+compaction count in the session metadata. A compaction failure is logged and
+the run continues with the uncompacted conversation.
 
 ---
 

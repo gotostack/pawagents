@@ -119,6 +119,7 @@ modifying files.`,
 		newModelCmd(app),
 		newAgentCmd(app),
 		newRunCmd(app),
+		newSessionCmd(app),
 	)
 
 	return root
