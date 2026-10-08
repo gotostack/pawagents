@@ -120,6 +120,7 @@ modifying files.`,
 		newAgentCmd(app),
 		newRunCmd(app),
 		newSessionCmd(app),
+		newMCPCmd(app),
 	)
 
 	return root

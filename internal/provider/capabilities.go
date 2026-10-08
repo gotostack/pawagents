@@ -101,6 +101,31 @@ func StaticCapabilities(providerType string) llm.ModelCapabilities {
 	}
 }
 
+// StaticVerdictAuthoritative reports whether the static capability table can be
+// trusted for a provider type.
+//
+// A negative answer from the table means one of two very different things: the
+// provider contract rules the capability out, or the table simply does not
+// know, because the models behind that provider differ from each other. A
+// caller that reports a capability refusal to a user, or that decides whether
+// to attempt a task, has to tell those cases apart: "this model cannot call
+// tools" and "this model may or may not be able to call tools" lead to opposite
+// decisions.
+//
+// The verdict is authoritative for the providers that document a contract for
+// their models, and not for the ones that host arbitrary models: an Ollama
+// server runs models with and without tool calling, and a compatible endpoint
+// can be anything from a full clone to a narrow proxy, so for both only the
+// endpoint itself can answer.
+func StaticVerdictAuthoritative(providerType string) bool {
+	switch providerType {
+	case config.ProviderTypeOpenAIResponses, config.ProviderTypeOpenAIChat, config.ProviderTypeAnthropic:
+		return true
+	default:
+		return false
+	}
+}
+
 // ApplyOverrides merges operator supplied capability overrides onto base.
 //
 // Overrides win over everything else, including a probe result: an operator

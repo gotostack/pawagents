@@ -50,13 +50,15 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Agent and model registry commands with offline capability checks | Done |
 | Session persistence: `pagent session list`, `pagent session show` | Done |
 | Context compaction with a deterministic summary | Done |
-| MCP server, Codex and Claude Code integration | Planned |
+| MCP server: `list_agents`, `get_agent`, `delegate_task` over stdio | Done |
+| Codex and Claude Code integration guides and examples | Planned |
 
 **Not implemented yet** — do not expect these to work:
 
-`pagent doctor`, `pagent mcp serve`, `pagent session continue`. They are
-described in the roadmap below, and each one is documented here as soon as it
-lands.
+`pagent doctor`, a `pagent mcp serve` HTTP transport, `pagent session
+continue`, and the `continue_task`, `get_task` and `cancel_task` MCP tools. They
+are described in the roadmap below, and each one is documented here as soon as
+it lands.
 
 ---
 
@@ -209,6 +211,7 @@ only runs a local model is never blocked.
 | `pagent run` | Run one task with a configured agent and print the structured result. |
 | `pagent session list` | List the recorded sessions, newest first. `--output text\|json`. |
 | `pagent session show <id>` | Describe one recorded session. `--messages` adds the transcript. |
+| `pagent mcp serve --stdio` | Serve `list_agents`, `get_agent` and `delegate_task` over MCP on stdio. |
 
 Global flags:
 
@@ -675,6 +678,69 @@ the run continues with the uncompacted conversation.
 
 ---
 
+## MCP server
+
+A coding agent reaches PawAgents over the Model Context Protocol. The server is
+host neutral: Codex, Claude Code and any other MCP client see the same three
+tools, the same request schema and the same result envelope.
+
+```bash
+pagent mcp serve --stdio
+```
+
+Standard output carries the protocol, so diagnostics go to standard error. The
+transport is a flag so that a later HTTP transport changes nothing a host sees.
+
+| Tool | Purpose |
+| --- | --- |
+| `list_agents` | The configured agents with their model alias, tool grant and a readiness verdict. |
+| `get_agent` | One agent in detail: targets, budget, permissions, prompt source, missing capabilities. |
+| `delegate_task` | Run one bounded task and return the structured result. |
+
+### The delegation contract
+
+`delegate_task` is not a prompt wrapper. A delegated task states the agent, the
+question, the workspace it may read, the background the agent cannot discover
+for itself, the constraints the answer must respect, the output mode and a
+budget that can only narrow the agent's own limits:
+
+```json
+{
+  "agent": "reviewer",
+  "task": "Review the current changes for concurrency problems.",
+  "workspace": "/home/user/openvswitch",
+  "background": "The patch changes PMD scheduling behavior.",
+  "files": ["lib/dpif-netdev.c"],
+  "constraints": ["Only report evidence-backed findings"],
+  "output_mode": "structured",
+  "budget": { "max_rounds": 20, "timeout_sec": 300 }
+}
+```
+
+The reply is the same envelope `pagent run` prints — `status`, `agent`,
+`provider`, `model`, `summary`, `findings`, `usage` and `session_id` — whatever
+model produced it, plus `error_kind` when the task did not complete. A failure
+is reported in one of three ways:
+
+- **the task never started** (an unknown agent, an unusable workspace): the call
+  fails and the message starts with the classified error kind;
+- **the task ran and failed** (a budget, a timeout, a provider error): the call
+  fails, and the envelope still carries the partial answer and the session id;
+- **the task ran and completed**: the envelope is the result.
+
+### Readiness
+
+`list_agents` and `get_agent` report `ready` and `confirmed` rather than a bare
+verdict. `ready` says whether the runtime expects the agent to run, and
+`confirmed` says whether that answer rests on evidence: a probe of the endpoint,
+or a provider contract that documents the capability. An agent that is not
+ready and not confirmed has **unknown** capabilities, not missing ones — an
+Ollama server hosts models with and without tool calling, so only the endpoint
+can answer, and the runtime asks it when the task starts. A host that treats
+those two cases alike would refuse to delegate to local models that work.
+
+---
+
 ## Security model
 
 - External subagents are **read-only by default**. `permissions.filesystem:
@@ -759,6 +825,8 @@ internal/tools        tool runtime: registry, executor, argument decoding
 internal/tools/repo   repository readers (read, list, search, stat)
 internal/tools/git    git readers (diff, show, status, log)
 internal/security     workspace guard, permissions, secret handling
+internal/session      session store: metadata, result, transcript, tool calls
+internal/mcpserver    MCP server and the three host facing tools
 internal/apperrors    error kinds and process exit codes
 internal/logging      structured logging with redaction
 internal/version      build metadata
@@ -795,7 +863,7 @@ orchestrator.
 | Phase | Content |
 | --- | --- |
 | 0.1 | Core runtime, OpenAI-compatible, Anthropic, native Ollama, Codex, Claude Code |
-| 0.2 | Session continuation, provider fallback, HTTP MCP transport |
+| 0.2 | Session continuation, provider fallback, HTTP MCP transport, `pagent doctor` |
 | 0.3 | Parallel agent teams, routing, OpenTelemetry |
 | 1.0 | Stable provider API, stable MCP contract, plugin ecosystem |
 

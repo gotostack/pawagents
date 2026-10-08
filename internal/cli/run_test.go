@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pawagents/pawagents/internal/agent"
 	"github.com/pawagents/pawagents/internal/apperrors"
@@ -36,6 +37,7 @@ import (
 type sseRecorder struct {
 	server   *httptest.Server
 	bodies   []string
+	delay    time.Duration
 	mu       sync.Mutex
 	requests []string
 }
@@ -65,6 +67,13 @@ func newSSEServer(t *testing.T, bodies ...string) *sseRecorder {
 
 		if index >= len(recorder.bodies) {
 			index = len(recorder.bodies) - 1
+		}
+
+		// A delayed answer is how a test reaches a delegation deadline. It is
+		// applied after the request is recorded, so the test can still assert
+		// that the call was made.
+		if recorder.delay > 0 {
+			time.Sleep(recorder.delay)
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")

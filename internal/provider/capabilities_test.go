@@ -191,3 +191,31 @@ func TestResolveNormalizesBudgets(t *testing.T) {
 		t.Fatalf("output tokens = %d, want them clamped to the window", clamped.MaxOutputTokens)
 	}
 }
+
+func TestStaticVerdictAuthoritative(t *testing.T) {
+	// The providers that document a contract for their models can be trusted
+	// without a probe.
+	for _, providerType := range []string{
+		config.ProviderTypeAnthropic,
+		config.ProviderTypeOpenAIResponses,
+		config.ProviderTypeOpenAIChat,
+	} {
+		if !StaticVerdictAuthoritative(providerType) {
+			t.Fatalf("%s: the static table should be authoritative", providerType)
+		}
+	}
+
+	// An Ollama server hosts models with and without tool calling, and a
+	// compatible endpoint can be anything, so only the endpoint can answer.
+	for _, providerType := range []string{
+		config.ProviderTypeOllama,
+		config.ProviderTypeOpenAICompat,
+		config.ProviderTypeGemini,
+		config.ProviderTypeBedrock,
+		"made-up",
+	} {
+		if StaticVerdictAuthoritative(providerType) {
+			t.Fatalf("%s: the static table must not be authoritative", providerType)
+		}
+	}
+}
