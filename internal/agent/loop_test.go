@@ -651,6 +651,64 @@ func TestRunnerStopsAtTheTokenBudget(t *testing.T) {
 	}
 }
 
+func TestRunnerStopsAtTheFinalAnswerInputBudget(t *testing.T) {
+	model := &scriptedModel{
+		name:         "test",
+		capabilities: testCapabilities(),
+		scripts: [][]llm.Event{
+			answerEvents("done", llm.Usage{InputTokens: 101, OutputTokens: 10}),
+		},
+	}
+
+	runner, _ := newTestRunner(t, model, runnerTestOptions{budget: Budget{
+		MaxRounds:       5,
+		MaxInputTokens:  100,
+		MaxOutputTokens: 1000,
+	}})
+	result, err := runner.Run(context.Background(), Task{Instruction: "Review"})
+	if err == nil {
+		t.Fatalf("exceeding the final-answer input budget must fail the task")
+	}
+	if kind := apperrors.KindOf(err); kind != apperrors.KindBudgetExceeded {
+		t.Fatalf("kind = %s, want %s", kind, apperrors.KindBudgetExceeded)
+	}
+	if result.Status != StatusBudgetExceeded {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "input tokens") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
+func TestRunnerStopsAtTheFinalAnswerOutputBudget(t *testing.T) {
+	model := &scriptedModel{
+		name:         "test",
+		capabilities: testCapabilities(),
+		scripts: [][]llm.Event{
+			answerEvents("done", llm.Usage{InputTokens: 10, OutputTokens: 101}),
+		},
+	}
+
+	runner, _ := newTestRunner(t, model, runnerTestOptions{budget: Budget{
+		MaxRounds:       5,
+		MaxInputTokens:  1000,
+		MaxOutputTokens: 100,
+	}})
+	result, err := runner.Run(context.Background(), Task{Instruction: "Review"})
+	if err == nil {
+		t.Fatalf("exceeding the final-answer output budget must fail the task")
+	}
+	if kind := apperrors.KindOf(err); kind != apperrors.KindBudgetExceeded {
+		t.Fatalf("kind = %s, want %s", kind, apperrors.KindBudgetExceeded)
+	}
+	if result.Status != StatusBudgetExceeded {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "output tokens") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
 func TestRunnerReportsATimeout(t *testing.T) {
 	model := &scriptedModel{
 		name:         "test",

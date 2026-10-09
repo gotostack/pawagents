@@ -257,6 +257,10 @@ func (r *Runner) loop(ctx context.Context, task Task) (string, Usage, error) {
 			InputTokens:  response.Usage.InputTokens,
 			OutputTokens: response.Usage.OutputTokens,
 		})
+		if err := r.checkUsageBudget(usage); err != nil {
+			return "", usage, err
+		}
+
 		messages = append(messages, response.Message)
 		r.recorder.Message(response.Message)
 
@@ -269,18 +273,26 @@ func (r *Runner) loop(ctx context.Context, task Task) (string, Usage, error) {
 			return "", usage, err
 		}
 		messages = append(messages, results...)
-
-		if r.options.Budget.MaxInputTokens > 0 && usage.InputTokens > r.options.Budget.MaxInputTokens {
-			return "", usage, budgetExceeded("agent.run",
-				"the agent used %d input tokens, above its %d token limit",
-				usage.InputTokens, r.options.Budget.MaxInputTokens)
-		}
-		if r.options.Budget.MaxOutputTokens > 0 && usage.OutputTokens > r.options.Budget.MaxOutputTokens {
-			return "", usage, budgetExceeded("agent.run",
-				"the agent produced %d output tokens, above its %d token limit",
-				usage.OutputTokens, r.options.Budget.MaxOutputTokens)
-		}
 	}
+}
+
+// checkUsageBudget applies the token budgets to the accumulated usage.
+//
+// It runs after every provider response, so a round that ends the loop with a
+// final answer is held to the same input and output limits as a round that
+// asks for tools.
+func (r *Runner) checkUsageBudget(usage Usage) error {
+	if r.options.Budget.MaxInputTokens > 0 && usage.InputTokens > r.options.Budget.MaxInputTokens {
+		return budgetExceeded("agent.run",
+			"the agent used %d input tokens, above its %d token limit",
+			usage.InputTokens, r.options.Budget.MaxInputTokens)
+	}
+	if r.options.Budget.MaxOutputTokens > 0 && usage.OutputTokens > r.options.Budget.MaxOutputTokens {
+		return budgetExceeded("agent.run",
+			"the agent produced %d output tokens, above its %d token limit",
+			usage.OutputTokens, r.options.Budget.MaxOutputTokens)
+	}
+	return nil
 }
 
 // generate performs one model call and drains its stream.
