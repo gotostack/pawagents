@@ -61,7 +61,8 @@ type Workspace struct {
 }
 
 // WorkspaceOptions configures the guard. The zero value is the safe default:
-// confined, no symlink traversal, one megabyte reads.
+// confined, no symlink traversal, one megabyte reads, and the built-in
+// sensitive-file deny rules.
 type WorkspaceOptions struct {
 	// AllowOutside permits reading outside the workspace root.
 	AllowOutside bool
@@ -71,12 +72,71 @@ type WorkspaceOptions struct {
 	FollowSymlinks bool
 	// MaxFileBytes caps a single read. Zero means DefaultMaxFileBytes.
 	MaxFileBytes int64
-	// BlockedPaths are glob patterns refused inside the workspace.
+	// BlockedPaths are additional glob patterns refused inside the workspace.
+	// Built-in sensitive-file patterns are always enforced.
 	BlockedPaths []string
 }
 
 // DefaultMaxFileBytes is the read cap used when none is configured.
 const DefaultMaxFileBytes = 1 << 20
+
+var defaultBlockedPaths = []string{
+	".env",
+	".env.*",
+	".envrc",
+	"*.pem",
+	"*.key",
+	"*.p12",
+	"*.pfx",
+	"*.p8",
+	"*.jks",
+	"id_rsa",
+	"id_ed25519",
+	"id_ecdsa",
+	"id_dsa",
+	".netrc",
+	".npmrc",
+	".pypirc",
+	".git-credentials",
+	".vault-token",
+	"credentials",
+	"credentials.json",
+	"*_credentials.json",
+	"application_default_credentials.json",
+	"service-account*.json",
+	".aws/credentials",
+	".docker/config.json",
+	".kube/config",
+	".config/gcloud/application_default_credentials.json",
+}
+
+// DefaultBlockedPaths returns the sensitive-file patterns always enforced by
+// a Workspace, regardless of caller-supplied options.
+func DefaultBlockedPaths() []string {
+	return append([]string(nil), defaultBlockedPaths...)
+}
+
+// BlockedPathsWithDefaults returns the built-in sensitive-file patterns
+// followed by any non-empty additional patterns, without duplicates.
+func BlockedPathsWithDefaults(additional []string) []string {
+	patterns := DefaultBlockedPaths()
+	seen := make(map[string]struct{}, len(patterns)+len(additional))
+	for _, pattern := range patterns {
+		seen[pattern] = struct{}{}
+	}
+	for _, pattern := range additional {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if _, exists := seen[pattern]; exists {
+			continue
+		}
+		patterns = append(patterns, pattern)
+		seen[pattern] = struct{}{}
+	}
+	return patterns
+}
 
 // NewWorkspace opens the guard for a directory.
 //
@@ -129,12 +189,7 @@ func NewWorkspace(directory string, options WorkspaceOptions) (*Workspace, error
 		maxBytes = DefaultMaxFileBytes
 	}
 
-	blocked := make([]string, 0, len(options.BlockedPaths))
-	for _, pattern := range options.BlockedPaths {
-		if trimmed := strings.TrimSpace(pattern); trimmed != "" {
-			blocked = append(blocked, trimmed)
-		}
-	}
+	blocked := BlockedPathsWithDefaults(options.BlockedPaths)
 
 	return &Workspace{
 		root:           root,
@@ -285,7 +340,13 @@ func (w *Workspace) ReadDir(name string) ([]fs.DirEntry, error) {
 		return nil, apperrors.Wrap(apperrors.KindTool, "workspace.list",
 			"cannot list %s", err, name)
 	}
-	return entries, nil
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if !w.isBlocked(path.Join(rootName, entry.Name())) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
 }
 
 // Walk calls fn for every regular file below directory, skipping blocked paths
@@ -457,11 +518,13 @@ func (w *Workspace) isBlocked(relative string) bool {
 	if len(w.blocked) == 0 {
 		return false
 	}
-	cleaned := strings.TrimPrefix(path.Clean(relative), "./")
+	// The workspace may be on a case-insensitive filesystem, so deny rules
+	// must not be bypassable by changing the spelling of a sensitive name.
+	cleaned := strings.ToLower(strings.TrimPrefix(path.Clean(relative), "./"))
 	base := path.Base(cleaned)
 
 	for _, pattern := range w.blocked {
-		normalized := strings.TrimPrefix(pattern, "./")
+		normalized := strings.ToLower(strings.TrimPrefix(pattern, "./"))
 		normalized = strings.TrimPrefix(normalized, "**/")
 		if ok, err := path.Match(normalized, cleaned); err == nil && ok {
 			return true
@@ -512,7 +575,7 @@ func escapeError(op, name, root string) error {
 // blockedError builds the error a blocked path produces.
 func blockedError(name string) error {
 	return apperrors.New(apperrors.KindWorkspace, "workspace.guard",
-		"path %q is blocked by security.blocked_paths", name).
+		"path %q is blocked by the workspace security policy", name).
 		WithDetails(map[string]any{"path": name})
 }
 

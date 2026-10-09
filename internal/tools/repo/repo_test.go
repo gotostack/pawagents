@@ -22,8 +22,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pawagents/pawagents/internal/agent"
 	"github.com/pawagents/pawagents/internal/apperrors"
+	"github.com/pawagents/pawagents/internal/llm"
 	"github.com/pawagents/pawagents/internal/security"
+	"github.com/pawagents/pawagents/internal/session"
 	"github.com/pawagents/pawagents/internal/tools"
 )
 
@@ -178,6 +181,217 @@ func TestReadRequiresAWorkspace(t *testing.T) {
 	}
 }
 
+func TestSensitiveFilesAreDeniedAcrossRepoTools(t *testing.T) {
+	const secret = "fixture-secret-must-never-leak"
+	env := newEnv(t, map[string]string{
+		".env":             "TOKEN=" + secret,
+		".aws/credentials": "aws_access_key_id=" + secret,
+		"id_ed25519":       secret,
+		"main.go":          "package main\n",
+		"credentials.json": `{"token":"` + secret + `"}`,
+	})
+
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "dotenv", path: ".env"},
+		{name: "cloud credentials", path: ".aws/credentials"},
+		{name: "private key", path: "id_ed25519"},
+		{name: "credential json", path: "credentials.json"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, toolCase := range []struct {
+				name string
+				tool tools.Tool
+				args string
+			}{
+				{name: "read", tool: Read{}, args: `{"path":"` + test.path + `"}`},
+				{name: "stat", tool: Stat{}, args: `{"path":"` + test.path + `"}`},
+			} {
+				t.Run(toolCase.name, func(t *testing.T) {
+					err := runErr(t, toolCase.tool, env, toolCase.args)
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("error leaked file content: %q", err)
+					}
+				})
+			}
+		})
+	}
+
+	listing := run(t, List{}, env, `{"path":".","depth":4,"include_hidden":true}`)
+	for _, deniedName := range []string{".env", "id_ed25519", "credentials.json"} {
+		if strings.Contains(listing.Content, deniedName) {
+			t.Errorf("repo.list exposed blocked name %q:\n%s", deniedName, listing.Content)
+		}
+	}
+
+	search := run(t, Search{}, env, `{"query":"fixture-secret-must-never-leak"}`)
+	if strings.Contains(search.Content, secret) {
+		t.Fatalf("repo.search leaked sensitive content: %q", search.Content)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(Read{})
+	executor := tools.NewExecutor(registry, security.NewGrant([]string{"repo.read"}, nil, nil), env)
+	result, err := executor.Execute(context.Background(), llm.ToolCall{
+		ID:        "blocked-read",
+		Name:      "repo.read",
+		Arguments: `{"path":".env"}`,
+	})
+	if err != nil {
+		t.Fatalf("Executor.Execute() = %v", err)
+	}
+	if !result.IsError || strings.Contains(result.Content, secret) {
+		t.Fatalf("ToolResult = %+v; want a redacted error result", result)
+	}
+}
+
+type sensitiveFileTestModel struct {
+	requests []*llm.GenerateRequest
+	calls    int
+}
+
+func (m *sensitiveFileTestModel) Name() string { return "security-test-model" }
+func (m *sensitiveFileTestModel) Type() string { return "test" }
+func (m *sensitiveFileTestModel) Capabilities(context.Context, string) (llm.ModelCapabilities, error) {
+	return llm.ModelCapabilities{
+		ToolCalling:      true,
+		Streaming:        true,
+		SystemMessage:    true,
+		MaxContextTokens: 8192,
+		MaxOutputTokens:  1024,
+	}, nil
+}
+func (m *sensitiveFileTestModel) Generate(_ context.Context, request *llm.GenerateRequest) (llm.Stream, error) {
+	m.requests = append(m.requests, request)
+	m.calls++
+	if m.calls == 1 {
+		return llm.SliceStream(
+			llm.NewStartEvent("test"),
+			llm.NewToolCallEvent(0, llm.ToolCall{
+				ID:        "read-env",
+				Name:      "repo.read",
+				Arguments: `{"path":".env"}`,
+			}),
+			llm.NewFinishEvent(llm.FinishReasonToolCalls, "test"),
+		), nil
+	}
+	return llm.SliceStream(
+		llm.NewStartEvent("test"),
+		llm.NewTextDeltaEvent("The sensitive file is blocked."),
+		llm.NewFinishEvent(llm.FinishReasonStop, "test"),
+	), nil
+}
+
+func TestSensitiveFileContentNeverReachesAgentOrSession(t *testing.T) {
+	const secret = "session-fixture-sensitive-value"
+	env := newEnv(t, map[string]string{".env": "API_TOKEN=" + secret})
+
+	registry := tools.NewRegistry()
+	registry.Register(Read{})
+	grant := security.NewGrant([]string{"repo.read"}, nil, nil)
+	executor := tools.NewExecutor(registry, grant, env)
+	model := &sensitiveFileTestModel{}
+	store, err := session.NewStore(session.Options{
+		Directory:        filepath.Join(t.TempDir(), "sessions"),
+		PersistMessages:  true,
+		PersistToolCalls: true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() = %v", err)
+	}
+	record, err := store.Start(session.Meta{Agent: "security-reviewer"})
+	if err != nil {
+		t.Fatalf("Store.Start() = %v", err)
+	}
+	finished := false
+	t.Cleanup(func() {
+		if !finished {
+			if err := record.Finish(nil); err != nil {
+				t.Errorf("cleanup Session.Finish() = %v", err)
+			}
+		}
+	})
+
+	runner, err := agent.NewRunner(agent.RunnerOptions{
+		Profile: agent.Profile{
+			Name:         "security-reviewer",
+			SystemPrompt: "Review the workspace.",
+			OutputMode:   agent.OutputText,
+			Tools:        grant.Names(),
+			Grant:        grant,
+		},
+		Model:        model,
+		ModelName:    "test",
+		Capabilities: modelCapabilities(),
+		Executor:     executor,
+		Budget: agent.Budget{
+			MaxRounds:          3,
+			MaxToolCalls:       2,
+			MaxOutputTokens:    2048,
+			MaxContextTokens:   8192,
+			MaxToolOutputBytes: 4096,
+		},
+		MaxOutputTokens: 1024,
+		Recorder:        record,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() = %v", err)
+	}
+	result, err := runner.Run(context.Background(), agent.Task{Instruction: "Read .env"})
+	if err != nil {
+		t.Fatalf("Runner.Run() = %v", err)
+	}
+	if err := record.Finish(result); err != nil {
+		t.Fatalf("Session.Finish() = %v", err)
+	}
+	finished = true
+
+	if len(model.requests) != 2 {
+		t.Fatalf("model received %d requests, want 2", len(model.requests))
+	}
+	var messages strings.Builder
+	for _, request := range model.requests {
+		for _, message := range request.Messages {
+			messages.WriteString(message.Text())
+		}
+	}
+	if strings.Contains(messages.String(), secret) {
+		t.Fatalf("Agent message exposed sensitive content: %q", messages.String())
+	}
+
+	err = filepath.WalkDir(record.Directory(), func(name string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, readErr := os.ReadFile(name)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), secret) {
+			t.Errorf("session file %s exposed sensitive content", filepath.Base(name))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("inspect session files: %v", err)
+	}
+}
+
+func modelCapabilities() llm.ModelCapabilities {
+	return llm.ModelCapabilities{
+		ToolCalling:      true,
+		Streaming:        true,
+		SystemMessage:    true,
+		MaxContextTokens: 8192,
+		MaxOutputTokens:  1024,
+	}
+}
+
 func TestListReportsEntries(t *testing.T) {
 	env := newEnv(t, map[string]string{
 		"main.go":        "package main\n",
@@ -225,8 +439,11 @@ func TestListSkipsHiddenByDefault(t *testing.T) {
 	}
 
 	result = run(t, List{}, env, `{"depth":2,"include_hidden":true}`)
-	if !strings.Contains(result.Content, ".env") {
-		t.Fatalf("listing = %q, want hidden entries when asked", result.Content)
+	if strings.Contains(result.Content, ".env") {
+		t.Fatalf("listing = %q, sensitive files must stay hidden when requested", result.Content)
+	}
+	if !strings.Contains(result.Content, ".github/work.yml") {
+		t.Fatalf("listing = %q, want ordinary hidden entries when requested", result.Content)
 	}
 }
 

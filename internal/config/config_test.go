@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pawagents/pawagents/internal/security"
 )
 
 // writeConfig creates a configuration file inside a temporary directory and
@@ -346,6 +348,28 @@ providers:
 	}
 }
 
+func TestBlockedPathsKeepSensitiveDefaultsAndAddCustomPatterns(t *testing.T) {
+	cfg := prepare(t, `
+version: 1
+security:
+  blocked_paths:
+    - "private/**"
+    - ".env"
+`)
+	patterns := make(map[string]bool, len(cfg.Security.BlockedPaths))
+	for _, pattern := range cfg.Security.BlockedPaths {
+		patterns[pattern] = true
+	}
+	for _, pattern := range []string{".env", ".env.*", "*.pem", ".aws/credentials", "private/**"} {
+		if !patterns[pattern] {
+			t.Errorf("effective blocked_paths is missing %q", pattern)
+		}
+	}
+	if len(patterns) != len(cfg.Security.BlockedPaths) {
+		t.Fatalf("effective blocked_paths contains duplicates: %v", cfg.Security.BlockedPaths)
+	}
+}
+
 func TestDefaultTemplateValidates(t *testing.T) {
 	home := t.TempDir()
 	cfg := prepare(t, DefaultYAML(home))
@@ -372,6 +396,12 @@ func TestDefaultTemplateValidates(t *testing.T) {
 	}
 	if !strings.Contains(DefaultYAML(home), home) {
 		t.Fatal("the generated template must embed the resolved home directory")
+	}
+	template := DefaultYAML(home)
+	for _, pattern := range security.DefaultBlockedPaths() {
+		if !strings.Contains(template, `- "`+pattern+`"`) {
+			t.Errorf("generated template is missing built-in blocked path %q", pattern)
+		}
 	}
 }
 

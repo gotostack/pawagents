@@ -28,7 +28,8 @@ security:
   allow_outside_workspace: false
   follow_symlinks: false
   max_file_size: 1048576      # per read, in bytes
-  blocked_paths: []           # globs refused even inside the workspace
+  blocked_paths:              # additional globs; sensitive-file defaults always apply
+    - "secrets/*"
   allowed_env: []             # env vars an agent may see
 
 sessions:
@@ -50,6 +51,14 @@ telemetry:
 | `PAWAGENTS_LOG_FORMAT` | `text` or `json`. |
 | `PAWAGENTS_TELEMETRY_ENABLED` | Overrides `telemetry.enabled`. |
 | `PAWAGENTS_ALLOW_OUTSIDE_WORKSPACE` | Overrides `security.allow_outside_workspace`. |
+
+The Workspace Guard always denies common credential files, including `.env`
+and `.env.*`, private-key/certificate files (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
+`*.p8`, `*.jks`), common SSH private-key names, and files such as `.netrc`,
+`.npmrc`, `.pypirc`, `.git-credentials`, cloud credentials, and service-account
+JSON files. `security.blocked_paths` only adds rules; it cannot disable these
+built-in protections. Repository tools apply the same deny rules to read, stat,
+list, and search, with case-insensitive matching for filesystem portability.
 
 ## Providers
 

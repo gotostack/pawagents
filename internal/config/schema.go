@@ -368,8 +368,9 @@ type Security struct {
 	// AllowedEnv lists environment variable names that may be exposed when an
 	// agent explicitly asks for them. It is empty by default.
 	AllowedEnv []string `yaml:"allowed_env,omitempty" json:"allowed_env,omitempty"`
-	// BlockedPaths lists path globs that repository tools must refuse even
-	// inside the workspace, for example "*/.env".
+	// BlockedPaths adds path globs that repository tools must refuse even
+	// inside the workspace. Built-in sensitive-file patterns always remain
+	// active, for example ".env" and "*.pem".
 	BlockedPaths []string `yaml:"blocked_paths,omitempty" json:"blocked_paths,omitempty"`
 }
 

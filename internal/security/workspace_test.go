@@ -16,6 +16,7 @@ package security
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -265,6 +266,89 @@ func TestWorkspaceBlockedPaths(t *testing.T) {
 	}
 	if workspace.Blocked() == nil {
 		t.Fatal("Blocked() must report the configured patterns")
+	}
+}
+
+func TestWorkspaceDefaultSensitivePaths(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		".env":                "default-env-secret",
+		".env.production":     "production-secret",
+		".aws/credentials":    "aws-secret",
+		".docker/config.json": "docker-secret",
+		".kube/config":        "kube-secret",
+		".config/gcloud/application_default_credentials.json": "gcloud-secret",
+		"id_ed25519":                "ssh-secret",
+		"client.pem":                "certificate-secret",
+		"signing.key":               "signing-secret",
+		".netrc":                    "netrc-secret",
+		".npmrc":                    "npm-secret",
+		"service-account-prod.json": "service-account-secret",
+		"main.go":                   "package main\n",
+	}
+	for name, contents := range files {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(name)), contents)
+	}
+
+	workspace, err := NewWorkspace(root, WorkspaceOptions{
+		BlockedPaths: []string{"private/**"},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkspace() = %v", err)
+	}
+	t.Cleanup(func() { _ = workspace.Close() })
+
+	for _, name := range []string{
+		".env",
+		".env.production",
+		".aws/credentials",
+		".docker/config.json",
+		".kube/config",
+		".config/gcloud/application_default_credentials.json",
+		"id_ed25519",
+		"client.pem",
+		"signing.key",
+		".netrc",
+		".npmrc",
+		"service-account-prod.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := workspace.ReadFile(name); err == nil {
+				t.Fatalf("ReadFile(%q) unexpectedly succeeded", name)
+			} else if !apperrors.IsKind(err, apperrors.KindWorkspace) {
+				t.Fatalf("ReadFile(%q) error kind = %q, want workspace", name, apperrors.KindOf(err))
+			}
+			if _, err := workspace.Stat(name); err == nil {
+				t.Fatalf("Stat(%q) unexpectedly succeeded", name)
+			}
+			if file, err := workspace.Open(name); err == nil {
+				_ = file.Close()
+				t.Fatalf("Open(%q) unexpectedly succeeded", name)
+			}
+		})
+	}
+
+	data, err := workspace.ReadFile("main.go")
+	if err != nil || string(data) != "package main\n" {
+		t.Fatalf("ReadFile(main.go) = %q, %v; ordinary source must remain readable", data, err)
+	}
+	if !workspace.isBlocked("private/token.txt") {
+		t.Fatal("caller-supplied blocked patterns must be additive")
+	}
+
+	for _, dir := range []string{".", ".aws", ".docker", ".kube"} {
+		entries, err := workspace.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir(%q) = %v", dir, err)
+		}
+		for _, entry := range entries {
+			if workspace.isBlocked(path.Join(dir, entry.Name())) {
+				t.Errorf("ReadDir(%q) returned blocked entry %q", dir, entry.Name())
+			}
+		}
+		if !workspace.isBlocked(".ENV") || !workspace.isBlocked("certs/CLIENT.PEM") {
+			t.Fatal("sensitive file rules must not be bypassable by changing path case")
+		}
 	}
 }
 

@@ -120,6 +120,7 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Security.MaxFileSize == 0 {
 		cfg.Security.MaxFileSize = DefaultMaxFileSize
 	}
+	cfg.Security.BlockedPaths = security.BlockedPathsWithDefaults(cfg.Security.BlockedPaths)
 	if len(cfg.Security.RedactEnv) == 0 {
 		cfg.Security.RedactEnv = security.DefaultSecretPatterns()
 	}
@@ -276,6 +277,34 @@ security:
   allow_outside_workspace: false
   follow_symlinks: false
   max_file_size: 1048576
+  blocked_paths:
+    - ".env"
+    - ".env.*"
+    - ".envrc"
+    - "*.pem"
+    - "*.key"
+    - "*.p12"
+    - "*.pfx"
+    - "*.p8"
+    - "*.jks"
+    - "id_rsa"
+    - "id_ed25519"
+    - "id_ecdsa"
+    - "id_dsa"
+    - ".netrc"
+    - ".npmrc"
+    - ".pypirc"
+    - ".git-credentials"
+    - ".vault-token"
+    - "credentials"
+    - "credentials.json"
+    - "*_credentials.json"
+    - "application_default_credentials.json"
+    - "service-account*.json"
+    - ".aws/credentials"
+    - ".docker/config.json"
+    - ".kube/config"
+    - ".config/gcloud/application_default_credentials.json"
   redact_env:
     - "*_TOKEN"
     - "*_KEY"

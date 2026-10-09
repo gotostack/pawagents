@@ -29,8 +29,16 @@ Every filesystem access goes through one guard in `internal/security`, built on
 - Symlinks are not followed by default. `security.follow_symlinks: true` allows a
   relative symlink whose target stays inside the workspace; an absolute symlink
   is never followed, even when it points inside.
-- `security.blocked_paths` refuses globs even inside the workspace, for example
-  `*/.env` or `**/*.pem`.
+- The guard always refuses common credential files, including `.env` and
+  `.env.*`, private-key/certificate files (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
+  `*.p8`, `*.jks`), common SSH private-key names, and credential files such as
+  `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, cloud credentials, and
+  service-account JSON files. These defaults apply even when a caller supplies
+  its own `blocked_paths`, and matching is case-insensitive for consistent
+  protection on case-insensitive filesystems.
+- `security.blocked_paths` adds custom globs to that built-in deny list; it
+  cannot remove the built-in credential protections. Blocked files are refused
+  by read/stat operations and omitted from directory listings and searches.
 - Reads are bounded by `security.max_file_size`, and tool output by the agent
   budget, so no single call can fill the context window.
 
@@ -86,7 +94,7 @@ coding agent can branch on the kind without parsing prose.
 | --- | --- |
 | `security.workspace_root` | The default directory a delegation may read. |
 | `security.allow_outside_workspace` | Turns the sandbox into "the whole filesystem, read-only". Reported as a warning by `pagent doctor`. |
-| `security.blocked_paths` | Globs refused even inside the workspace. |
+| `security.blocked_paths` | Additional globs refused even inside the workspace; built-in credential-file rules cannot be removed. |
 | `security.allowed_env` | The only environment variables an agent may be told about. |
 | `agents.<name>.tools` | The grant. An agent can only call what it lists. |
 | `agents.<name>.permissions` | Must stay read-only. |
