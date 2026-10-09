@@ -1,0 +1,40 @@
+{
+  "name": "pawagents",
+  "version": "0.1.0",
+  "description": "Delegate one bounded task to an independent read-only subagent running on another model or provider, and get back structured, evidence-backed findings.",
+  "author": {
+    "name": "PawAgents Authors"
+  },
+  "homepage": "https://github.com/pawagents/pawagents",
+  "repository": "https://github.com/pawagents/pawagents",
+  "license": "Apache-2.0",
+  "keywords": [
+    "subagent",
+    "second opinion",
+    "cross-model verification",
+    "code review",
+    "debugging",
+    "security analysis",
+    "mcp",
+    "ollama"
+  ],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "PawAgents",
+    "shortDescription": "Independent read-only subagents on other models",
+    "longDescription": "PawAgents runs a bounded task in an independent, read-only subagent that uses a different model, a different provider, or a fully local model. Ask it for an independent review, a second opinion on a design, or a cross-check of your own findings, and it returns a structured result with file and line references, evidence and confidence. It never writes to the workspace and never runs a shell command; the calling agent stays responsible for applying changes.",
+    "developerName": "PawAgents Authors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read"
+    ],
+    "websiteURL": "https://github.com/pawagents/pawagents",
+    "defaultPrompt": [
+      "Ask PawAgents to independently review my current changes",
+      "Have another model look at this bug",
+      "Cross-check your review with a second model"
+    ],
+    "brandColor": "#1F6FEB"
+  }
+}

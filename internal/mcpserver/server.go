@@ -174,18 +174,20 @@ func (s *Server) Run(ctx context.Context, transport mcp.Transport) error {
 // defaultInstructions is sent to a client when it initializes a session.
 //
 // It states the advisory rule explicitly, because a host that reads it early is
-// less likely to treat a finding as an applied change.
-const defaultInstructions = `PawAgents runs an independent read-only subagent on a task you
-delegate, typically using a different model or provider than you.
+// less likely to treat a finding as an applied change. The first paragraph
+// carries everything a host must know, because a client is free to use only the
+// beginning of this text when it decides whether to call the server at all.
+const defaultInstructions = `PawAgents runs an independent read-only subagent on a task you delegate,
+usually on a different model or provider than you.
 
-Use list_agents to see what is available, get_agent before delegating if you need
-to know whether an agent can run, and delegate_task to run one bounded task.
+Use list_agents to see what is available, get_agent to check before delegating
+whether an agent can run, and delegate_task to run one bounded task.
 
-The result is advisory. Verify critical findings before modifying files:
+The result is advisory. Verify critical findings before modifying files.
 PawAgents never writes to the workspace and never runs a shell command.
 
-Give the agent a bounded question, and start a new delegation for a new question
-rather than continuing a long one.`
+Give one bounded question per delegation, state the workspace the agent may read,
+and start a new delegation for a new question instead of continuing a long one.`
 
 // versionOrUnknown keeps the MCP metadata valid when no version was injected at
 // build time.

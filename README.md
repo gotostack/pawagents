@@ -51,7 +51,8 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Session persistence: `pagent session list`, `pagent session show` | Done |
 | Context compaction with a deterministic summary | Done |
 | MCP server: `list_agents`, `get_agent`, `delegate_task` over stdio | Done |
-| Codex and Claude Code integration guides and examples | Planned |
+| Codex integration: plugin manifest, bundled MCP server, skill | Done |
+| Claude Code integration guides and examples | Planned |
 
 **Not implemented yet** — do not expect these to work:
 
@@ -741,6 +742,52 @@ those two cases alike would refuse to delegate to local models that work.
 
 ---
 
+## Using with Codex
+
+Codex starts the server itself, so `pagent` only has to be on `PATH`:
+
+```bash
+go build -o pagent ./cmd/pagent
+sudo install pagent /usr/local/bin/pagent
+
+codex mcp add pawagents -- pagent mcp serve --stdio
+codex mcp list
+```
+
+One setting matters in practice: **Codex caps a tool call at 60 seconds by
+default**, and a delegation is a whole agent run. Raise the limit in
+`~/.codex/config.toml` to at least the `timeout_sec` of the agents you delegate
+to:
+
+```toml
+[mcp_servers.pawagents]
+command = "pagent"
+args = ["mcp", "serve", "--stdio"]
+tool_timeout_sec = 1800
+```
+
+Then ask for something that benefits from a second model:
+
+```text
+Ask PawAgents to independently review my current changes, using the local
+reviewer. Then verify its findings before you act on them.
+```
+
+`integrations/codex/` packages the same wiring as a Codex plugin: the manifest,
+the bundled MCP server and a skill that tells Codex when a delegation is worth
+it. See [integrations/codex/README.md](integrations/codex/README.md) for the
+plugin route, the skill install and the verification steps.
+
+Two things to remember when reading a result:
+
+- **The result is advisory.** PawAgents never writes to the workspace and never
+  runs a shell command; verify critical findings before changing files.
+- **A failure is classified.** The message starts with the error kind, and a
+  delegation that ran but failed still reports the partial answer and the
+  session id, which `pagent session show` can re-read.
+
+---
+
 ## Security model
 
 - External subagents are **read-only by default**. `permissions.filesystem:
@@ -827,6 +874,7 @@ internal/tools/git    git readers (diff, show, status, log)
 internal/security     workspace guard, permissions, secret handling
 internal/session      session store: metadata, result, transcript, tool calls
 internal/mcpserver    MCP server and the three host facing tools
+integrations          host glue: Codex and Claude Code, never part of the core
 internal/apperrors    error kinds and process exit codes
 internal/logging      structured logging with redaction
 internal/version      build metadata
