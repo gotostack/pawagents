@@ -46,6 +46,9 @@ func writeRegistryConfig(t *testing.T, endpoint string) string {
 		t.Fatalf("cannot write the prompt file: %v", err)
 	}
 
+	// A compatible endpoint never reports tool calling, so an alias that
+	// grants tools declares it, which is what an operator does for a gateway
+	// that is a full clone.
 	contents := fmt.Sprintf(`
 version: 1
 providers:
@@ -70,6 +73,8 @@ models:
   routed:
     provider: gateway
     model: fake-model
+    capabilities:
+      tool_calling: true
   with-fallback:
     primary:
       provider: cloud-gemini

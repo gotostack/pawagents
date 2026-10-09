@@ -432,8 +432,13 @@ func TestCapabilitiesUsesTheModelListing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Capabilities() = %v", err)
 		}
-		if !capabilities.Streaming || !capabilities.ToolCalling {
-			t.Fatalf("capabilities = %+v, want the compatible defaults", capabilities)
+		if !capabilities.Streaming {
+			t.Fatalf("capabilities = %+v, want streaming assumed", capabilities)
+		}
+		// The listing carries identifiers only, so being listed says nothing
+		// about function calling: the answer stays unknown.
+		if capabilities.ToolCalling {
+			t.Fatalf("capabilities = %+v, a model listing must not imply tool calling", capabilities)
 		}
 		// Parallel tool calls are not assumed for a compatible endpoint: some
 		// servers accept only one call per turn.
@@ -466,7 +471,7 @@ func TestCapabilitiesUsesTheModelListing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Capabilities() = %v, want the model to be tolerated", err)
 		}
-		if !capabilities.Streaming {
+		if !capabilities.Streaming || capabilities.ToolCalling {
 			t.Fatalf("capabilities = %+v", capabilities)
 		}
 	})
@@ -484,6 +489,38 @@ func TestCapabilitiesUsesTheModelListing(t *testing.T) {
 		if !capabilities.Streaming || capabilities.MaxContextTokens == 0 {
 			t.Fatalf("capabilities = %+v", capabilities)
 		}
+		if capabilities.ToolCalling {
+			t.Fatalf("capabilities = %+v, a failed probe cannot establish tool calling", capabilities)
+		}
+	})
+
+	t.Run("listing that answers with garbage", func(t *testing.T) {
+		instance, _ := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, "<html>not a listing</html>")
+		}))
+
+		capabilities, err := instance.Capabilities(context.Background(), "qwen3-coder")
+		if err != nil {
+			t.Fatalf("Capabilities() = %v, want a fallback instead of a failure", err)
+		}
+		if capabilities.ToolCalling {
+			t.Fatalf("capabilities = %+v, a failed probe cannot establish tool calling", capabilities)
+		}
+	})
+
+	t.Run("listing that drops the connection", func(t *testing.T) {
+		instance, _ := newTestProvider(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic(http.ErrAbortHandler)
+		}))
+
+		capabilities, err := instance.Capabilities(context.Background(), "qwen3-coder")
+		if err != nil {
+			t.Fatalf("Capabilities() = %v, want a fallback instead of a failure", err)
+		}
+		if capabilities.ToolCalling {
+			t.Fatalf("capabilities = %+v, a failed probe cannot establish tool calling", capabilities)
+		}
 	})
 
 	t.Run("rejected credential", func(t *testing.T) {
@@ -497,6 +534,46 @@ func TestCapabilitiesUsesTheModelListing(t *testing.T) {
 			t.Fatalf("kind = %q, want an authentication error (%v)", apperrors.KindOf(err), err)
 		}
 	})
+}
+
+// TestCapabilitiesNeverClaimToolCalling pins the contract: the Chat Completions
+// protocol and its model listing carry no capability metadata, so no answer the
+// endpoint gives may be turned into ToolCalling=true. The override on the model
+// alias is the only path to it, and the orchestrator applies that.
+func TestCapabilitiesNeverClaimToolCalling(t *testing.T) {
+	listings := map[string]http.HandlerFunc{
+		"listed": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"qwen3-coder"}]}`)
+		},
+		"unlisted": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[]}`)
+		},
+		"unsupported": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		},
+	}
+
+	for name, handler := range listings {
+		t.Run(name, func(t *testing.T) {
+			instance, _ := newTestProvider(t, handler)
+
+			capabilities, err := instance.Capabilities(context.Background(), "qwen3-coder")
+			if err != nil {
+				t.Fatalf("Capabilities() = %v", err)
+			}
+			if capabilities.ToolCalling {
+				t.Fatalf("capabilities = %+v, want tool calling left unknown", capabilities)
+			}
+			if !capabilities.Streaming || !capabilities.SystemMessage {
+				t.Fatalf("capabilities = %+v, want the conservative subset", capabilities)
+			}
+			if capabilities.Supports(llm.Requirements{Tools: true}) {
+				t.Fatal("an unknown tool support must not satisfy a tool requirement")
+			}
+		})
+	}
 }
 
 func TestListModels(t *testing.T) {

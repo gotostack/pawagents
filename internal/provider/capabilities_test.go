@@ -17,6 +17,7 @@ package provider
 import (
 	"testing"
 
+	"github.com/pawagents/pawagents/internal/apperrors"
 	"github.com/pawagents/pawagents/internal/config"
 	"github.com/pawagents/pawagents/internal/llm"
 )
@@ -59,8 +60,16 @@ func TestStaticCapabilities(t *testing.T) {
 	}
 
 	compat := StaticCapabilities(config.ProviderTypeOpenAICompat)
-	if !compat.ToolCalling || compat.ParallelTools {
+	// A compatible endpoint publishes model identifiers and nothing else, so
+	// nothing it says can establish tool calling.
+	if compat.ToolCalling {
+		t.Fatalf("a compatible endpoint must not be assumed to call tools: %+v", compat)
+	}
+	if compat.ParallelTools {
 		t.Fatalf("compatible endpoints are conservative about concurrency: %+v", compat)
+	}
+	if !compat.Streaming || !compat.SystemMessage {
+		t.Fatalf("compatible capabilities = %+v", compat)
 	}
 	if compat.MaxContextTokens != ConservativeContextTokens {
 		t.Fatalf("compatible context = %d", compat.MaxContextTokens)
@@ -189,6 +198,56 @@ func TestResolveNormalizesBudgets(t *testing.T) {
 	}, nil)
 	if clamped.MaxOutputTokens != 2048 {
 		t.Fatalf("output tokens = %d, want them clamped to the window", clamped.MaxOutputTokens)
+	}
+}
+
+// TestCompatibleEndpointToolCallingIsNeverInferred covers the contract for a
+// compatible endpoint: unknown, a probe that only lists models, a failed probe,
+// and the explicit override in both directions.
+func TestCompatibleEndpointToolCallingIsNeverInferred(t *testing.T) {
+	model := &config.Model{Primary: &config.ModelRef{Provider: "gateway", Model: "fake-model"}}
+
+	// 1. Nothing declares tool calling, and no override was written.
+	unknown := Resolve(config.ProviderTypeOpenAICompat, model, nil)
+	if unknown.ToolCalling {
+		t.Fatalf("tool calling must stay unknown: %+v", unknown)
+	}
+	if unknown.Supports(llm.Requirements{Tools: true}) {
+		t.Fatal("unknown tool support must not satisfy Requirements{Tools: true}")
+	}
+	err := unknown.Validate(llm.Requirements{Tools: true}, "fake-model")
+	if !apperrors.IsKind(err, apperrors.KindCapability) {
+		t.Fatalf("kind = %q, want a capability error (%v)", apperrors.KindOf(err), err)
+	}
+
+	// 2. A probe that only managed to list models changes nothing: the listing
+	// carries identifiers, not capabilities.
+	probed := Resolve(config.ProviderTypeOpenAICompat, model, &llm.ModelCapabilities{
+		Streaming:        true,
+		SystemMessage:    true,
+		MaxContextTokens: ConservativeContextTokens,
+	})
+	if probed.ToolCalling {
+		t.Fatalf("a compat probe must not enable tool calling: %+v", probed)
+	}
+
+	// 3. The operator declares it for an endpoint they know.
+	declared := *model
+	declared.Capabilities = &config.CapabilityOverrides{ToolCalling: boolPtr(true)}
+	enabled := Resolve(config.ProviderTypeOpenAICompat, &declared, nil)
+	if !enabled.ToolCalling || !enabled.Supports(llm.Requirements{Tools: true}) {
+		t.Fatalf("the override must enable tool calling: %+v", enabled)
+	}
+
+	// 4. And an explicit false beats a provider that reports true, so an
+	// operator can also turn the capability off.
+	hosted := &config.Model{Capabilities: &config.CapabilityOverrides{ToolCalling: boolPtr(false)}}
+	disabled := Resolve(config.ProviderTypeOpenAIResponses, hosted, &llm.ModelCapabilities{ToolCalling: true})
+	if disabled.ToolCalling {
+		t.Fatalf("an explicit false must win: %+v", disabled)
+	}
+	if disabled.Supports(llm.Requirements{Tools: true}) {
+		t.Fatal("an explicit false must fail the tool requirement")
 	}
 }
 

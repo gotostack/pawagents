@@ -63,6 +63,10 @@ func (p *fakeProvider) Generate(_ context.Context, request *llm.GenerateRequest)
 	return llm.SliceStream(events...), nil
 }
 
+// boolValue returns a pointer to value, for the optional capability override
+// fields that tell "unset" from "false".
+func boolValue(value bool) *bool { return &value }
+
 // providerCapabilities are what the fixture provider reports for its model.
 func providerCapabilities() llm.ModelCapabilities {
 	return llm.ModelCapabilities{

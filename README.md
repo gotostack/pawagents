@@ -37,7 +37,7 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Internal LLM protocol (messages, tools, events, capabilities) | Done |
 | HTTP transport with TLS, proxy, credential and header handling | Done |
 | Provider registry with lazy construction | Done |
-| OpenAI-compatible provider (chat completions, streaming, tools) | Done |
+| OpenAI-compatible provider (chat completions, streaming, declared tool calling) | Done |
 | Native Ollama provider with capability detection | Done |
 | Native Anthropic Messages provider (tool use, streaming, reasoning) | Done |
 | OpenAI Responses provider (schema constrained output, reasoning) | Done |
@@ -313,7 +313,7 @@ this build, not the roadmap:
 | Type | Status |
 | --- | --- |
 | `ollama` | Implemented (native API, capability detection, tool calls) |
-| `openai-compatible` | Implemented (Chat Completions, streaming, tools) |
+| `openai-compatible` | Implemented (Chat Completions, streaming; tool calling must be declared per alias) |
 | `anthropic` | Implemented (Messages API, native tool use, streaming) |
 | `openai-responses` | Implemented (Responses API, schema constrained output) |
 | `openai-chat` | Known, not implemented yet |
@@ -453,6 +453,21 @@ Supported knobs: `base_url`, `api_key`, `api_key_env`, `headers`,
 `client_cert_file`, `client_key_file`, `server_name`, `insecure_skip_verify`).
 `extra_body` is merged into every request body, so a vendor specific flag never
 needs a code change; a per-request `extra` wins over it.
+
+The type never reports tool calling on its own. The Chat Completions protocol has
+no capability metadata and the `/models` listing carries identifiers only, so a
+listed model says nothing about function calling. An alias that grants tools
+declares it, which is also what makes the check honest for a gateway that is not
+a full clone:
+
+```yaml
+models:
+  deepseek-coder:
+    provider: deepseek
+    model: deepseek-chat
+    capabilities:
+      tool_calling: true
+```
 
 ### Anthropic
 

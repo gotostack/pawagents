@@ -80,8 +80,16 @@ func StaticCapabilities(providerType string) llm.ModelCapabilities {
 	case config.ProviderTypeOpenAICompat:
 		// Compatibility endpoints vary wildly: some are full OpenAI clones,
 		// some are narrower. Only the universally safe subset is assumed.
+		//
+		// Tool calling is not part of that subset. The model listing these
+		// endpoints expose carries identifiers and nothing else, so a model
+		// being listed says nothing about function calling; assuming it would
+		// hand an agent that grants tools a model which cannot call them, and
+		// the failure would only appear after the first tokens were spent. An
+		// operator who knows the endpoint is a full clone declares it with a
+		// `capabilities.tool_calling: true` override on the model alias.
 		return llm.ModelCapabilities{
-			ToolCalling:      true,
+			ToolCalling:      false,
 			Streaming:        true,
 			SystemMessage:    true,
 			MaxContextTokens: ConservativeContextTokens,

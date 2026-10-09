@@ -121,11 +121,17 @@ func (p *Provider) Close() error { return p.transport.Close() }
 
 // Capabilities implements provider.Provider.
 //
-// The Chat Completions protocol carries no capability metadata, so the answer
-// comes from the static table for this provider type plus whatever the model
-// listing reveals. A model that the endpoint does not list produces a warning
-// rather than a failure: gateways frequently expose aliases that the listing
-// does not enumerate, and refusing to run on that basis would be wrong. Use
+// The Chat Completions protocol carries no capability metadata, and the model
+// listing most endpoints expose carries identifiers only. Nothing the endpoint
+// says can therefore establish that a model calls tools, and the answer is the
+// conservative static table for this type: streaming and a system role are
+// assumed, tool calling is not. An operator who knows the endpoint to be a full
+// clone says so with a `capabilities.tool_calling` override on the model alias,
+// and that override wins over this result.
+//
+// A model that the endpoint does not list produces a warning rather than a
+// failure: gateways frequently expose aliases that the listing does not
+// enumerate, and refusing to run on that basis would be wrong. Use
 // `pagent provider test` for a strict existence check.
 func (p *Provider) Capabilities(ctx context.Context, model string) (llm.ModelCapabilities, error) {
 	capabilities := provider.StaticCapabilities(providerType)

@@ -63,6 +63,10 @@ func registryConfig(t *testing.T, mutate func(cfg *config.Config)) *config.Confi
 			"mixed": {
 				Primary:  &config.ModelRef{Provider: "cloud", Model: "gpt-5"},
 				Fallback: []config.ModelRef{{Provider: "gateway", Model: "fake-model"}},
+				// A compatible endpoint reports no tool calling of its own; the
+				// alias declares it, which is how an operator configures a
+				// gateway that is a full clone.
+				Capabilities: &config.CapabilityOverrides{ToolCalling: boolValue(true)},
 			},
 			"orphan": {Primary: &config.ModelRef{Provider: "nowhere", Model: "ghost"}},
 		},

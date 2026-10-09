@@ -47,6 +47,10 @@ models:
   gateway-coder:
     provider: gateway
     model: strong-model
+    # A compatible endpoint publishes no capability metadata, so tool calling
+    # has to be declared for the agents that need it. See docs/providers.md.
+    capabilities:
+      tool_calling: true
 
   local-coder:
     provider: local-ollama

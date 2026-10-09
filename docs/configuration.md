@@ -119,7 +119,7 @@ models:
 | `provider` / `model` | The target. A `primary` plus `fallback` list is accepted for a later release and reported as not implemented. |
 | `temperature` | Overrides the provider default. |
 | `max_context_tokens`, `max_output_tokens` | Override what detection reports, for a model that does not advertise its window. |
-| `capabilities` | Corrects the capability table, for example when a local model supports tools without advertising them. An override wins over everything, including a probe. |
+| `capabilities` | Corrects the capability table, for example when a local model supports tools without advertising them. An override wins over everything, including a probe. An `openai-compatible` endpoint never advertises tools, so its aliases declare `tool_calling: true` when the endpoint is a full clone. |
 
 ## Agents
 

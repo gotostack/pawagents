@@ -805,6 +805,11 @@ func TestNewRunnerRefusesAModelWithoutToolCalling(t *testing.T) {
 	if kind := apperrors.KindOf(err); kind != apperrors.KindCapability {
 		t.Fatalf("kind = %s, want %s", kind, apperrors.KindCapability)
 	}
+	// The refusal has to happen before the first generation, not after a
+	// round already spent tokens.
+	if len(model.requests) != 0 {
+		t.Fatalf("the refused runner called the model %d times", len(model.requests))
+	}
 }
 
 func TestNewRunnerRequiresAModelAndAModelName(t *testing.T) {

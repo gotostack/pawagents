@@ -153,7 +153,23 @@ func toolCall(id, name, arguments string) string {
 
 // writeRunConfig installs a configuration pointing at a test endpoint and
 // returns the workspace directory.
+//
+// The model alias declares tool calling: a compatible endpoint cannot report
+// it, because its model listing carries identifiers and nothing else, so this
+// is how an operator configures a gateway that is a full clone.
 func writeRunConfig(t *testing.T, endpoint, agentBlock string) string {
+	t.Helper()
+
+	return writeRunConfigWithModels(t, endpoint, `  test-model:
+    provider: local
+    model: fake-model
+    capabilities:
+      tool_calling: true`, agentBlock)
+}
+
+// writeRunConfigWithModels is writeRunConfig with the models block spelled out,
+// so a test can leave a capability undeclared.
+func writeRunConfigWithModels(t *testing.T, endpoint, modelsBlock, agentBlock string) string {
 	t.Helper()
 
 	home := t.TempDir()
@@ -174,12 +190,10 @@ providers:
     base_url: %s/v1
     api_key: sk-test
 models:
-  test-model:
-    provider: local
-    model: fake-model
+%s
 agents:
 %s
-`, endpoint, agentBlock)
+`, endpoint, modelsBlock, agentBlock)
 
 	path := filepath.Join(home, config.ConfigFileName)
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
@@ -256,6 +270,40 @@ func TestRunPrintsJSON(t *testing.T) {
 	}
 	if result.StartedAt.IsZero() || result.FinishedAt.IsZero() {
 		t.Fatalf("timestamps were not recorded: %+v", result)
+	}
+}
+
+// TestRunRefusesAModelThatCannotCallTools proves the capability gate runs
+// before the first generation: the agent grants a tool, the endpoint publishes
+// no capability metadata, and the run stops with a classified capability error
+// without a single completion request.
+func TestRunRefusesAModelThatCannotCallTools(t *testing.T) {
+	server := newSSEServer(t, textAnswer(`{"summary":"nothing","findings":[]}`))
+	workspace := writeRunConfigWithModels(t, server.server.URL, `  test-model:
+    provider: local
+    model: fake-model`, `  reviewer:
+    model: test-model
+    instructions: Review code carefully.
+    tools:
+      - repo.read`)
+
+	stdout, stderr, code := run(t, "run", "--agent", "reviewer", "--task", "Review", "--workspace", workspace)
+	if code != apperrors.ExitCapability {
+		t.Fatalf("exit code = %d, want %d (stdout = %s, stderr = %s)",
+			code, apperrors.ExitCapability, stdout, stderr)
+	}
+
+	report := stdout + stderr
+	if !strings.Contains(report, "tool_calling") {
+		t.Fatalf("the refusal must name the missing capability:\n%s", report)
+	}
+	if !strings.Contains(report, "capabilities") {
+		t.Fatalf("the refusal must point at the configuration that resolves it:\n%s", report)
+	}
+
+	// The whole point: no token was spent.
+	if requests := server.Requests(); len(requests) != 0 {
+		t.Fatalf("a refused run reached the provider: %v", requests)
 	}
 }
 

@@ -29,7 +29,7 @@ type ModelLister interface{ ListModels(ctx context.Context) ([]string, error) }
 | Type | Protocol | Capabilities | Notes |
 | --- | --- | --- | --- |
 | `ollama` | The Ollama HTTP API | Discovered by probing `/api/show` | A local server can host a model with or without tool calling, so the static table assumes nothing. |
-| `openai-compatible` | Chat completions | Assumed conservative subset | Gateways vary; only the universally safe subset is assumed. |
+| `openai-compatible` | Chat completions | Assumed conservative subset; tool calling never | The protocol and its model listing carry no capability metadata, so an alias that needs tools declares `tool_calling: true`. |
 | `openai-responses` | The Responses API | Declared | Schema-constrained output, reasoning summaries as thinking, `store: false` always. |
 | `anthropic` | The Messages API | Declared, without structured output | A completion cannot be constrained to a JSON schema, so the envelope is requested in the prompt. |
 
@@ -72,6 +72,22 @@ A verdict from the third source is reported as unconfirmed: `pagent doctor`,
 `pagent agent show` and the MCP `list_agents` payload all distinguish "this model
 cannot" from "nobody has asked the endpoint yet", because the two call for
 opposite decisions.
+
+An `openai-compatible` endpoint never reports tool calling, and a probe does not
+change that: the Chat Completions protocol defines no capability metadata, and
+the `/models` listing that most gateways expose carries model identifiers only.
+A model being listed therefore says nothing about function calling. An alias
+that grants tools must declare it, otherwise `pagent run` stops before the first
+request with a `CapabilityError`:
+
+```yaml
+models:
+  gateway-coder:
+    provider: gateway
+    model: strong-model
+    capabilities:
+      tool_calling: true     # this gateway is a full clone
+```
 
 ## Writing a provider
 
