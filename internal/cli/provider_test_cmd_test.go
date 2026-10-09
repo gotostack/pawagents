@@ -253,3 +253,110 @@ func TestProviderTestRequiresExactlyOneArgument(t *testing.T) {
 		t.Fatal("a missing provider name must fail")
 	}
 }
+
+// writeConfigFile writes a configuration into a fresh home and points the
+// command at it.
+func writeConfigFile(t *testing.T, contents string) {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	t.Setenv(config.EnvConfigPath, "")
+
+	if err := os.WriteFile(filepath.Join(home, config.ConfigFileName), []byte(contents), 0o600); err != nil {
+		t.Fatalf("cannot write the test configuration: %v", err)
+	}
+}
+
+// TestProviderTestChecksTheTargetBoundToTheProvider guards against asking a
+// provider for a model that only another target of the alias names.
+//
+// A local endpoint has to serve the model named by the target that points at
+// it. Reading the primary target instead asks a local server for a cloud model,
+// reports a healthy installation as broken, and hides the real problem.
+func TestProviderTestChecksTheTargetBoundToTheProvider(t *testing.T) {
+	server := ollamaServer(t, []string{"completion", "tools"}, 32768, []string{"qwen3-coder:latest"})
+	writeConfigFile(t, `
+version: 1
+providers:
+  local-ollama:
+    type: ollama
+    base_url: `+server.URL+`
+  cloud-anthropic:
+    type: anthropic
+    api_key_env: PAWAGENTS_TEST_ABSENT_KEY
+models:
+  strong-coder:
+    primary:
+      provider: cloud-anthropic
+      model: claude-sonnet-4-5
+    fallback:
+      - provider: local-ollama
+        model: qwen3-coder
+agents:
+  cloud-reviewer:
+    model: strong-coder
+    instructions: review the code
+    tools:
+      - repo.read
+`)
+
+	stdout, stderr, code := run(t, "provider", "test", "local-ollama")
+	if code != apperrors.ExitOK {
+		t.Fatalf("exit code = %d, stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "strong-coder → qwen3-coder") {
+		t.Fatalf("report must check the model this provider serves:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "claude-sonnet-4-5") {
+		t.Fatalf("report must not ask a local provider for a cloud model:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "Agents: cloud-reviewer") {
+		t.Fatalf("report must name the agent that depends on the alias:\n%s", stdout)
+	}
+}
+
+// TestProviderTestDoesNotRepeatARepeatedTarget checks that an alias listing the
+// same provider twice is still one check.
+func TestProviderTestDoesNotRepeatARepeatedTarget(t *testing.T) {
+	server := ollamaServer(t, []string{"completion", "tools"}, 32768, []string{"qwen3-coder:latest"})
+	writeConfigFile(t, `
+version: 1
+providers:
+  local-ollama:
+    type: ollama
+    base_url: `+server.URL+`
+models:
+  local-coder:
+    primary:
+      provider: local-ollama
+      model: qwen3-coder
+    fallback:
+      - provider: local-ollama
+        model: qwen3-coder
+agents:
+  local-reviewer:
+    model: local-coder
+    instructions: review the code
+    tools:
+      - repo.read
+`)
+
+	stdout, _, code := run(t, "provider", "test", "local-ollama", "--output", "json")
+	if code != apperrors.ExitOK {
+		t.Fatalf("exit code = %d\n%s", code, stdout)
+	}
+
+	var report struct {
+		Models []struct {
+			Alias string `json:"alias"`
+			Model string `json:"model"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("output is not valid JSON: %v (%s)", err, stdout)
+	}
+	if len(report.Models) != 1 {
+		t.Fatalf("models = %v, want exactly one check", report.Models)
+	}
+}

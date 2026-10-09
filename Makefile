@@ -18,7 +18,7 @@ LDFLAGS := -s -w \
 
 GOFLAGS ?=
 
-.PHONY: all build install test vet fmt fmt-check lint integration-test clean tidy help
+.PHONY: all build install test vet fmt fmt-check lint integration-test docs-check clean tidy help
 
 all: build
 
@@ -60,6 +60,10 @@ lint:
 ## integration-test: build the binary and run environment-gated integration checks
 integration-test:
 	./scripts/integration-test.sh
+
+## docs-check: run every command the README documents and assert its exit status
+docs-check:
+	./scripts/check-docs.sh
 
 ## tidy: sync go.mod / go.sum
 tidy:

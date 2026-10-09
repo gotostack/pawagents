@@ -1,0 +1,75 @@
+# A fully local setup: no cloud provider, no credential, no network.
+#
+# Use it when the machine cannot reach an API or when the code must not leave
+# the machine. Install the model first:
+#
+#   ollama pull qwen3.8:27b-mlx
+#
+# Then check the wiring:
+#
+#   pagent provider test local-ollama
+#   pagent doctor
+#   pagent agent show local-reviewer --probe
+version: 1
+
+providers:
+  local-ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+
+models:
+  local-coder:
+    provider: local-ollama
+    model: qwen3.8:27b-mlx
+    # A local model often has a smaller window than a hosted one, and the
+    # runtime compacts the conversation at 70% of whatever this reports.
+    max_context_tokens: 32768
+
+agents:
+  local-reviewer:
+    description: Independent review using a local model
+    model: local-coder
+    # The built-in prompt for this name is used when the file is missing.
+    prompt: reviewer.md
+    tools:
+      - repo.read
+      - repo.list
+      - repo.search
+      - git.diff
+      - git.status
+    output_mode: structured
+    # A local model is slower, so the budget is wider than for a hosted one.
+    max_rounds: 12
+    timeout_sec: 600
+
+  quick-checker:
+    description: One narrow question answered by the local model
+    model: local-coder
+    instructions: |
+      Answer the question in the task with a single JSON object:
+
+      {"summary": "one paragraph", "findings": []}
+
+      Read only the files the task names. If the answer needs a file the task
+      does not name, say so in the summary instead of searching the workspace.
+    output_mode: structured
+    tools:
+      - repo.read
+    max_rounds: 4
+    timeout_sec: 180
+
+security:
+  allow_outside_workspace: false
+  follow_symlinks: false
+  blocked_paths:
+    - "*/.env"
+    - "**/*.pem"
+
+sessions:
+  persist_messages: true
+  persist_tool_calls: true
+  retention: 20
+
+telemetry:
+  # Nothing about a local run needs to leave the machine.
+  enabled: false

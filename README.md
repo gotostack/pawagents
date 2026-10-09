@@ -8,7 +8,7 @@ may run on a completely different model, provider or machine.
 
 ```
 Codex  ─┐
-        ├─ MCP ─→ pagent runtime ─→ LLM Router ─→ provider
+        ├─ MCP ─→ subagent runtime ─→ LLM Router ─→ provider
 Claude ─┘                                  ├── OpenAI
                                            ├── Anthropic
                                            ├── OpenAI-compatible
@@ -53,13 +53,13 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | MCP server: `list_agents`, `get_agent`, `delegate_task` over stdio | Done |
 | Codex integration: plugin manifest, bundled MCP server, skill | Done |
 | Claude Code integration: MCP configuration, project memory, skill | Done |
+| `pagent doctor`: offline diagnostics with local model probes | Done |
 
 **Not implemented yet** — do not expect these to work:
 
-`pagent doctor`, a `pagent mcp serve` HTTP transport, `pagent session
-continue`, and the `continue_task`, `get_task` and `cancel_task` MCP tools. They
-are described in the roadmap below, and each one is documented here as soon as
-it lands.
+An HTTP transport for `pagent mcp serve`, `pagent session continue`, and the
+`continue_task`, `get_task` and `cancel_task` MCP tools. They are described in
+the roadmap below, and each one is documented here as soon as it lands.
 
 ---
 
@@ -213,6 +213,7 @@ only runs a local model is never blocked.
 | `pagent session list` | List the recorded sessions, newest first. `--output text\|json`. |
 | `pagent session show <id>` | Describe one recorded session. `--messages` adds the transcript. |
 | `pagent mcp serve --stdio` | Serve `list_agents`, `get_agent` and `delegate_task` over MCP on stdio. |
+| `pagent doctor` | Diagnose the installation. `--probe` asks remote endpoints too. |
 
 Global flags:
 
@@ -876,14 +877,134 @@ the same way for the same request.
 
 ---
 
+## Diagnosing a broken installation
+
+When a coding agent cannot delegate, `pagent doctor` says which part of the
+installation is wrong:
+
+```bash
+pagent doctor
+pagent doctor --probe          # ask remote endpoints too
+pagent doctor --workspace /path/to/repo
+pagent doctor --output json
+```
+
+The report covers the pieces a delegation depends on:
+
+| Section | What it answers |
+| --- | --- |
+| Config | The file in use, plus every validation error and warning. |
+| Providers | Type supported by this build, credential present, endpoint reachable. |
+| Ollama | The local model server, and whether the models the aliases name are pulled. |
+| Agents | Whether each agent can run against its model, and why not. |
+| Workspace | Readable, inside the limits, and a Git repository the git tools accept. |
+| MCP | The transport, the tools a host will see, and the commands to register it. |
+
+Every check that can be answered from the configuration is offline. A local
+model server is probed because that is where the interesting failures live and
+the call never leaves the machine; `--probe` adds remote endpoints, which costs
+a round trip but catches a wrong API key or a wrong base URL before a task does.
+
+The exit status is the classification of the first failed check, so a script can
+tell a missing credential (`4`) from an unusable workspace (`7`) or a broken
+configuration (`3`). Warnings do not fail the command, and a check that only
+concerns a provider nobody uses is a warning, not a failure.
+
+```text
+Providers
+  ✗ cloud-anthropic (anthropic)
+      environment variable ANTHROPIC_API_KEY is not set
+  ✓ local-ollama (ollama)
+      http://127.0.0.1:11434
+
+Ollama
+  ✓ qwen3.8:27b-mlx
+      used by local-coder
+
+Agents
+  ✗ cloud-reviewer (strong-coder)
+      no credential for cloud-anthropic (set ANTHROPIC_API_KEY)
+  ! local-reviewer (local-coder)
+      the endpoint decides whether this model can run the agent
+```
+
+The `!` line is the one distinction worth knowing: a readiness verdict that is
+not `confirmed` means nobody has asked the endpoint yet, not that the model is
+unsuitable. `pagent agent show <agent> --probe` answers it for one agent.
+
+---
+
+## Creating an agent
+
+An agent is the reusable half of a delegation: a prompt, a model alias, a tool
+grant, a budget and permissions. Add one to the configuration and it is
+immediately visible to `pagent agent list` and to a host through `list_agents`:
+
+```yaml
+agents:
+  reviewer:
+    description: Deep source-code review
+    model: strong-coder          # an alias, not a provider model name
+    prompt: reviewer.md          # a file, or inline instructions
+    tools: [repo.read, repo.search, git.diff]
+    output_mode: structured
+    max_rounds: 24
+    timeout_sec: 300
+```
+
+```bash
+pagent config validate      # every problem, not just the first
+pagent agent show reviewer  # the resolved profile and whether it can run
+```
+
+Details that matter:
+
+- **The prompt is a path or inline text.** A path is resolved relative to the
+  configuration file; a missing file falls back to the prompt built into the
+  binary for that name, which is reported by `pagent agent show`.
+- **The alias decouples the agent from the model.** Switching `strong-coder`
+  from a cloud model to a local one is a one-line change, and the agent does
+  not move.
+- **Tools are a grant, not a menu.** An agent may only call what it lists, and
+  the runtime refuses a tool the model cannot use with `CapabilityError`
+  instead of pretending.
+- **Writes are rejected by validation.** `permissions.filesystem: write` and
+  `permissions.shell: allow` do not load, because external subagents are
+  read-only by design.
+- **`output_mode: structured` asks for the finding envelope.** Providers that
+  can enforce a JSON schema do; the others are asked for it in the prompt.
+
+---
+
 ## Development
+
+```bash
+make build         # bin/pagent
+make test          # go test ./...
+make vet           # go vet ./...
+make fmt-check     # fail when a file is not gofmt-clean
+make lint          # golangci-lint when installed, otherwise go vet
+make install       # go install ./cmd/pagent
+make integration-test   # build the binary and run the scripted checks
+make docs-check    # run every command this README documents
+```
+
+The same commands without the `Makefile`:
 
 ```bash
 go test ./...      # unit tests
 go vet ./...       # static checks
 go build ./...     # compile everything
 ./scripts/integration-test.sh   # builds the binary and runs the test suite
+./scripts/check-docs.sh         # executes the documented commands
 ```
+
+Every command this README shows is executed by `scripts/check-docs.sh`: it
+builds the binary, creates a configuration in a scratch home, runs each
+invocation and asserts the exit status the documentation promises. A unit test
+(`internal/cli/readme_test.go`) checks the other direction, so the README can
+neither document a command that does not exist nor hide one that does. Commands
+that need a model endpoint are gated behind `PAWAGENTS_TEST_OLLAMA=1`.
 
 Integration tests that require external services are opt-in, so CI never fails
 on a machine without Ollama:
@@ -893,13 +1014,34 @@ PAWAGENTS_TEST_OLLAMA=1 ./scripts/integration-test.sh
 PAWAGENTS_TEST_MCP=1 ./scripts/integration-test.sh
 ```
 
-Unit tests live next to the code they cover; cross-cutting integration tests
-live under `tests/`.
+### What the tests cover
+
+| Layer | What it pins down |
+| --- | --- |
+| Unit tests, next to the code | Parsing, validation, the workspace guard, tool arguments, compaction, the session store, routing and budgets. |
+| Provider contract tests | The same behaviours for every provider: streaming, tool calls, usage, error classification and capability reporting. |
+| Agent tests | The loop: rounds, budgets, tool rounds, the structured result and a failing compactor. |
+| Security tests | Path traversal, absolute path escape, symlink escape, blocked paths and size limits. |
+| MCP tests | A real MCP client over an in-memory transport: discovery, the schemas a host validates, the delegation contract and classified failures. |
+| Documentation tests | The README's command list against the command tree, and every command's help text. |
+| `tests/` | The host integrations as data, and the end-to-end runs that need a built binary. |
+| `scripts/check-docs.sh` | Every documented invocation, executed against a generated configuration. |
 
 See [AGENTS.md](AGENTS.md) for the architectural rules that changes must
-respect.
+respect, and [docs/](docs/) for the longer explanations.
 
 ---
+
+## Documentation
+
+| Document | Content |
+| --- | --- |
+| [`docs/architecture.md`](docs/architecture.md) | package boundaries, the agent loop, the data flow |
+| [`docs/configuration.md`](docs/configuration.md) | every configuration key, its default and its validation |
+| [`docs/providers.md`](docs/providers.md) | provider types, capability checks, adding a provider |
+| [`docs/agents.md`](docs/agents.md) | agent profiles, budgets, prompts, results |
+| [`docs/mcp.md`](docs/mcp.md) | the MCP tools, the delegation contract, host wiring |
+| [`docs/security.md`](docs/security.md) | workspace guard, permissions, secrets, threat model |
 
 ## Repository layout
 
@@ -918,11 +1060,14 @@ internal/tools/git    git readers (diff, show, status, log)
 internal/security     workspace guard, permissions, secret handling
 internal/session      session store: metadata, result, transcript, tool calls
 internal/mcpserver    MCP server and the three host facing tools
+internal/doctor       the diagnostics behind `pagent doctor`
 integrations          host glue: Codex and Claude Code, never part of the core
 internal/apperrors    error kinds and process exit codes
 internal/logging      structured logging with redaction
 internal/version      build metadata
 prompts               built-in agent system prompts (embedded in the binary)
+docs                  long-form documentation
+examples              starter configurations, validated by the tests
 scripts               developer scripts
 ```
 
@@ -955,7 +1100,7 @@ orchestrator.
 | Phase | Content |
 | --- | --- |
 | 0.1 | Core runtime, OpenAI-compatible, Anthropic, native Ollama, Codex, Claude Code |
-| 0.2 | Session continuation, provider fallback, HTTP MCP transport, `pagent doctor` |
+| 0.2 | Session continuation, provider fallback, HTTP MCP transport, the `get_task`, `continue_task` and `cancel_task` tools |
 | 0.3 | Parallel agent teams, routing, OpenTelemetry |
 | 1.0 | Stable provider API, stable MCP contract, plugin ecosystem |
 

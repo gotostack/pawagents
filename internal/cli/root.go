@@ -121,6 +121,7 @@ modifying files.`,
 		newRunCmd(app),
 		newSessionCmd(app),
 		newMCPCmd(app),
+		newDoctorCmd(app),
 	)
 
 	return root

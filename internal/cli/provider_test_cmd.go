@@ -170,22 +170,11 @@ func testProvider(ctx context.Context, app *App, cfg *config.Config, name string
 		}
 	}
 
-	aliases, agents := providerModelAliases(cfg, name)
+	bindings, agents := providerModelBindings(cfg, name)
 	report.Agents = agents
 
-	for _, alias := range aliases {
-		targets, _, err := cfg.ModelTargets(alias)
-		if err != nil {
-			report.Models = append(report.Models, providerTestModel{
-				Alias: alias,
-				OK:    false,
-				Error: err.Error(),
-			})
-			report.Errors++
-			continue
-		}
-
-		entry := providerTestModel{Alias: alias, Model: targets[0].Model, OK: true}
+	for _, binding := range bindings {
+		entry := providerTestModel{Alias: binding.Alias, Model: binding.Model, OK: true}
 
 		if report.InstalledModels != nil {
 			installed := provider.MatchModel(report.InstalledModels, entry.Model)
@@ -203,7 +192,7 @@ func testProvider(ctx context.Context, app *App, cfg *config.Config, name string
 		default:
 			// The requirement set is derived from the agents bound to the
 			// alias, so the check matches what a run would demand.
-			if err := capabilities.Validate(orchestrator.RequirementsForAlias(cfg, alias), entry.Model); err != nil {
+			if err := capabilities.Validate(orchestrator.RequirementsForAlias(cfg, binding.Alias), entry.Model); err != nil {
 				entry.OK = false
 				entry.Error = err.Error()
 			}
@@ -222,10 +211,23 @@ func testProvider(ctx context.Context, app *App, cfg *config.Config, name string
 	return report, nil
 }
 
-// providerModelAliases returns the model aliases bound to a provider and the
-// agents that use those aliases.
-func providerModelAliases(cfg *config.Config, name string) ([]string, []string) {
-	aliases := make([]string, 0, len(cfg.Models))
+// providerModelBinding is one model that a provider serves, reached through one
+// of the targets of a model alias.
+type providerModelBinding struct {
+	Alias string
+	Model string
+}
+
+// providerModelBindings returns the models this provider actually serves and
+// the agents that depend on them.
+//
+// The binding is the (alias, target) pair, not the alias: an alias may route to
+// several providers, and a provider only has to serve the models its own
+// targets name. Checking the primary target of every alias would ask a local
+// server for a cloud model name and report a healthy installation as broken.
+func providerModelBindings(cfg *config.Config, name string) ([]providerModelBinding, []string) {
+	bindings := make([]providerModelBinding, 0, len(cfg.Models))
+	seen := map[string]bool{}
 	agentSet := map[string]bool{}
 
 	for _, alias := range cfg.ModelNames() {
@@ -237,13 +239,16 @@ func providerModelAliases(cfg *config.Config, name string) ([]string, []string) 
 			if target.Provider != name {
 				continue
 			}
-			aliases = append(aliases, alias)
+			key := alias + "\x00" + target.Model
+			if !seen[key] {
+				seen[key] = true
+				bindings = append(bindings, providerModelBinding{Alias: alias, Model: target.Model})
+			}
 			for agentName, agent := range cfg.Agents {
 				if agent != nil && agent.Model == alias {
 					agentSet[agentName] = true
 				}
 			}
-			break
 		}
 	}
 
@@ -255,7 +260,7 @@ func providerModelAliases(cfg *config.Config, name string) ([]string, []string) 
 	if len(agents) == 0 {
 		agents = nil
 	}
-	return aliases, agents
+	return bindings, agents
 }
 
 // renderProviderTest writes the human readable report.

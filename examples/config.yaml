@@ -1,0 +1,100 @@
+# A complete starter configuration.
+#
+# Copy it to ~/.pawagents/config.yaml, or start from `pagent config init`.
+#
+# `pagent config init` writes the prompt files next to the configuration. A
+# prompt path that does not exist is a warning, not a failure: the built-in
+# prompt of the same name is used, and `pagent agent show` says so.
+# Validate it with `pagent config validate`, then look at what a host would see
+# with `pagent agent list` and `pagent doctor`.
+version: 1
+
+providers:
+  # A hosted model. The credential is read from the environment at request
+  # time; it is never written to a session or a log.
+  anthropic:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+
+  # A local model server. Capabilities are discovered by probing it, because an
+  # Ollama server hosts models with and without tool calling.
+  local-ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+
+models:
+  # An alias is what an agent asks for; the provider and model behind it can
+  # change without the agent moving.
+  strong-coder:
+    provider: anthropic
+    model: claude-sonnet-4-5
+
+  local-coder:
+    provider: local-ollama
+    model: qwen3.8:27b-mlx
+    temperature: 0.2
+
+agents:
+  # The agent a host delegates code review to. Read-only, evidence-backed.
+  reviewer:
+    description: Independent review of a change, with evidence
+    model: strong-coder
+    prompt: reviewer.md
+    tools:
+      - repo.read
+      - repo.list
+      - repo.search
+      - git.diff
+      - git.status
+    output_mode: structured
+    max_rounds: 24
+    max_tool_calls: 60
+    timeout_sec: 300
+
+  # The same job on the local model, for a machine with no cloud access.
+  local-reviewer:
+    description: Independent review using the local model
+    model: local-coder
+    prompt: reviewer.md
+    tools:
+      - repo.read
+      - repo.list
+      - repo.search
+      - git.diff
+    output_mode: structured
+    max_rounds: 16
+    timeout_sec: 420
+
+  # A debugging partner: the symptom goes in as background.
+  debugger:
+    description: Reason about a failure that is hard to explain
+    model: strong-coder
+    prompt: debugger.md
+    tools:
+      - repo.read
+      - repo.search
+      - git.diff
+      - git.log
+    output_mode: structured
+    max_rounds: 20
+    timeout_sec: 300
+
+security:
+  # The default directory a delegation may read. Empty means the process
+  # working directory, which is what a host normally wants.
+  workspace_root: ""
+  allow_outside_workspace: false
+  follow_symlinks: false
+  blocked_paths:
+    - "*/.env"
+    - "**/*.pem"
+    - "**/id_rsa"
+
+sessions:
+  # Every task is recorded: metadata, the structured result and the transcript.
+  persist_messages: true
+  persist_tool_calls: true
+  retention: 50
+
+telemetry:
+  enabled: true

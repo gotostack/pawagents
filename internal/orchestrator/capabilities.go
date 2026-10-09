@@ -125,6 +125,27 @@ type CapabilityReport struct {
 	Error string `json:"error,omitempty"`
 }
 
+// Confirmed reports whether the verdict rests on evidence.
+//
+// An unconfirmed report comes from a conservative default: the capability table
+// assumes a model does not support something it cannot know, because an Ollama
+// server hosts models with and without tool calling and a compatible endpoint
+// can be anything. Callers that report the verdict to a user or decide whether
+// to attempt a task must tell "this model cannot" from "nobody knows yet", so
+// they ask here rather than reading the missing capabilities as a refusal.
+func (r CapabilityReport) Confirmed() bool {
+	return r.Probed || provider.StaticVerdictAuthoritative(r.ProviderType)
+}
+
+// Target renders the provider and model that would serve the task.
+func (r CapabilityReport) Target() string {
+	target := r.Provider + "/" + r.Model
+	if strings.TrimPrefix(target, "/") == "" {
+		return "no target"
+	}
+	return target
+}
+
 // CheckAgent reports whether an agent can run against its model.
 //
 // Without probe the answer comes from the configuration and the static

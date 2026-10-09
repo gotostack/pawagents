@@ -22,7 +22,6 @@ import (
 
 	"github.com/pawagents/pawagents/internal/apperrors"
 	"github.com/pawagents/pawagents/internal/orchestrator"
-	"github.com/pawagents/pawagents/internal/provider"
 )
 
 // AgentSummary is one entry of the list_agents payload.
@@ -242,8 +241,7 @@ func (s *Server) summarize(ctx context.Context, profile orchestrator.AgentProfil
 // decisions, and a host that cannot tell them apart will refuse to delegate to
 // local models that would have worked.
 func verdict(report orchestrator.CapabilityReport) (bool, string) {
-	evidenced := report.Probed || provider.StaticVerdictAuthoritative(report.ProviderType)
-	if evidenced {
+	if report.Confirmed() {
 		return true, explainMissing(report)
 	}
 	if report.OK {

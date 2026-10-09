@@ -1,0 +1,100 @@
+# A configuration tuned for Codex as the host.
+#
+# Register the server once:
+#
+#   codex mcp add pawagents -- pagent mcp serve --stdio
+#   codex mcp list
+#
+# Codex caps a tool call at 60 seconds by default and a delegation is a whole
+# agent run, so raise the limit in ~/.codex/config.toml to at least the
+# timeout_sec below:
+#
+#   [mcp_servers.pawagents]
+#   command = "pagent"
+#   args = ["mcp", "serve", "--stdio"]
+#   tool_timeout_sec = 1800
+#
+# The skill in integrations/codex/ tells Codex when delegating is worth it. See
+# integrations/codex/README.md for the plugin route.
+# `pagent config init` writes the prompt files next to the configuration. A
+# prompt path that does not exist is a warning, not a failure: the built-in
+# prompt of the same name is used, and `pagent agent show` says so.
+
+version: 1
+
+providers:
+  anthropic:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+
+  local-ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+
+models:
+  strong-coder:
+    provider: anthropic
+    model: claude-sonnet-4-5
+
+  local-coder:
+    provider: local-ollama
+    model: qwen3.8:27b-mlx
+
+agents:
+  # Codex delegates here for a review that is not the author's own opinion.
+  reviewer:
+    description: Independent code review with evidence and line references
+    model: strong-coder
+    prompt: reviewer.md
+    tools:
+      - repo.read
+      - repo.list
+      - repo.search
+      - git.diff
+      - git.status
+      - git.show
+    output_mode: structured
+    max_rounds: 24
+    max_tool_calls: 60
+    # Keep this below tool_timeout_sec in the Codex configuration.
+    timeout_sec: 300
+
+  # A second opinion from a different model, for cross-model verification.
+  cross-checker:
+    description: Cross-check a conclusion on a different model
+    model: local-coder
+    instructions: |
+      You are given a conclusion someone else reached about this repository, in
+      the background field. Your job is to try to falsify it, not to agree with
+      it:
+
+      - read the code the conclusion relies on;
+      - look for a path, a caller or a configuration that breaks it;
+      - answer with the JSON envelope, and list anything you could not verify in
+        the summary rather than asserting it.
+
+      {"summary": "one paragraph", "findings": []}
+    tools:
+      - repo.read
+      - repo.search
+      - git.diff
+    output_mode: structured
+    max_rounds: 12
+    timeout_sec: 420
+
+security:
+  # Codex passes the directory the session runs in; keep the sandbox on.
+  allow_outside_workspace: false
+  follow_symlinks: false
+  blocked_paths:
+    - "*/.env"
+    - "**/*.pem"
+    - "**/id_rsa"
+
+sessions:
+  persist_messages: true
+  persist_tool_calls: true
+  retention: 100
+
+telemetry:
+  enabled: true

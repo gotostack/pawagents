@@ -1,0 +1,130 @@
+# A configuration tuned for Claude Code as the host.
+#
+# Register the server once, for yourself:
+#
+#   claude mcp add pawagents -- pagent mcp serve --stdio
+#   claude mcp list
+#
+# Or share it with a team through the project configuration, which Claude Code
+# approves on first use:
+#
+#   cp integrations/claude-code/.mcp.json.example /path/to/project/.mcp.json
+#
+# The entry sets a per-call `timeout` in milliseconds, because a delegation
+# outlives the default tool timeout. Keep it above the timeout_sec below. The
+# skill in integrations/claude-code/ installs with:
+#
+#   cp -R integrations/claude-code/.claude/skills/pawagents ~/.claude/skills/pawagents
+# `pagent config init` writes the prompt files next to the configuration. A
+# prompt path that does not exist is a warning, not a failure: the built-in
+# prompt of the same name is used, and `pagent agent show` says so.
+
+version: 1
+
+providers:
+  anthropic:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+
+  # A gateway, if the machine reaches models through one. Credentials stay in
+  # the environment; the configuration never holds a secret.
+  gateway:
+    type: openai-compatible
+    base_url: https://gateway.internal/v1
+    api_key_env: GATEWAY_API_KEY
+    headers:
+      X-Team: platform
+
+  local-ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+
+models:
+  strong-coder:
+    provider: anthropic
+    model: claude-sonnet-4-5
+
+  gateway-coder:
+    provider: gateway
+    model: strong-model
+
+  local-coder:
+    provider: local-ollama
+    model: qwen3.8:27b-mlx
+
+agents:
+  # The reviewer Claude Code reaches for when a change deserves a second pair
+  # of eyes.
+  reviewer:
+    description: Independent review of the current changes
+    model: strong-coder
+    prompt: reviewer.md
+    tools:
+      - repo.read
+      - repo.list
+      - repo.search
+      - git.diff
+      - git.status
+    output_mode: structured
+    max_rounds: 24
+    max_tool_calls: 60
+    # Keep this below the `timeout` set in the MCP entry.
+    timeout_sec: 300
+
+  # An architecture pass: what the subsystem looks like, and what an
+  # alternative would cost.
+  architect:
+    description: Architecture analysis of a subsystem
+    model: strong-coder
+    prompt: architect.md
+    tools:
+      - repo.read
+      - repo.list
+      - repo.search
+      - git.log
+    output_mode: structured
+    max_rounds: 20
+    timeout_sec: 300
+
+  # A security pass, narrowed to the request-handling path by the delegation.
+  security-auditor:
+    description: Security analysis of a code path
+    model: strong-coder
+    prompt: security.md
+    tools:
+      - repo.read
+      - repo.search
+      - git.diff
+    output_mode: structured
+    max_rounds: 20
+    timeout_sec: 300
+
+  # A local model for work that must not leave the machine.
+  local-reviewer:
+    description: Independent review using a local model
+    model: local-coder
+    prompt: reviewer.md
+    tools:
+      - repo.read
+      - repo.search
+      - git.diff
+    output_mode: structured
+    max_rounds: 12
+    timeout_sec: 600
+
+security:
+  allow_outside_workspace: false
+  follow_symlinks: false
+  blocked_paths:
+    - "*/.env"
+    - "**/*.pem"
+    - "**/id_rsa"
+    - "**/*.key"
+
+sessions:
+  persist_messages: true
+  persist_tool_calls: true
+  retention: 100
+
+telemetry:
+  enabled: true
