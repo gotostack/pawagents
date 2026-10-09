@@ -89,7 +89,8 @@ type Runner struct {
 	// structured reports whether the answer must be the finding envelope.
 	structured bool
 	// enforceSchema reports whether the provider can constrain the answer to
-	// a JSON schema, as opposed to being asked for JSON in the prompt.
+	// a JSON schema, as opposed to being asked for JSON in the prompt. It is
+	// false whenever the agent may call a tool.
 	enforceSchema bool
 	// compactor reduces the conversation when it outgrows the window.
 	compactor Compactor
@@ -139,11 +140,20 @@ func NewRunner(options RunnerOptions) (*Runner, error) {
 
 	if runner.structured {
 		// Structured output is a request, not a requirement: the runtime asks
-		// for a schema when the provider can enforce one, and otherwise
-		// instructs the model in the prompt. Requiring it would exclude every
-		// local model that cannot enforce a schema while still answering in
-		// JSON.
-		runner.enforceSchema = options.Capabilities.StructuredOutput
+		// for a schema when the provider can enforce one and the turn cannot
+		// also produce a tool call, and otherwise instructs the model in the
+		// prompt. Requiring it would exclude every local model that cannot
+		// enforce a schema while still answering in JSON.
+		//
+		// A schema is never imposed on a turn that may call a tool. Constrained
+		// decoding fixes the grammar of the reply to JSON, and a tool call is
+		// not part of that reply: it is a separate protocol element, so an
+		// engine that is decoding a fixed grammar cannot emit one. Asking for
+		// both makes the model answer straight away instead of reading
+		// anything, which turns a grounded review into an ungrounded one. The
+		// prompt still requests the envelope, so a capable model still answers
+		// in JSON and the result is parsed either way.
+		runner.enforceSchema = options.Capabilities.StructuredOutput && !runner.hasTools
 	}
 
 	if runner.hasTools {

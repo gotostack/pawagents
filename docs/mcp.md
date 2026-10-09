@@ -128,5 +128,20 @@ pagent mcp serve --stdio      # run it by hand and speak JSON-RPC to it
 
 `claude mcp list` showing the server as connected is not the whole story: a host
 also validates the schemas it is handed, and rejects a tool whose root schema
-type is not a plain object. `pagent doctor` and the MCP tests in
-`internal/mcpserver` pin that rule.
+type is not a plain object. `pagent doctor`, the MCP tests in
+`internal/mcpserver` and `TestStdioExposesTheHostFacingContract` in `tests/mcp`
+all pin that rule.
+
+## Verifying the chains
+
+```bash
+PAWAGENTS_TEST_MCP=1 PAWAGENTS_TEST_OLLAMA=1 ./scripts/integration-test.sh
+PAWAGENTS_TEST_CLAUDE=1 ./scripts/integration-test.sh
+PAWAGENTS_TEST_CODEX=1 ./scripts/integration-test.sh
+```
+
+The first runs a real MCP client against a spawned `pagent mcp serve --stdio`
+and delegates a task to a local model: host to MCP to PawAgents to Ollama to a
+structured result. The second registers the built binary with the host CLIs and
+asks them whether the connection works. Both clean up after themselves and both
+skip with a reason when the machine cannot run them.

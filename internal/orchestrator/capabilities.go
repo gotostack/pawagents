@@ -32,9 +32,10 @@ import (
 // runtime and its documentation end up disagreeing.
 //
 // Structured output is deliberately not a requirement. The runtime asks for a
-// provider enforced schema only when the model supports one and otherwise
-// describes the envelope in the prompt, so requiring it would reject every
-// local model that cannot enforce a schema while still answering in JSON.
+// provider enforced schema only when the model supports one and the agent has
+// no tools to call, and otherwise describes the envelope in the prompt, so
+// requiring it would reject every local model that cannot enforce a schema
+// while still answering in JSON.
 func RequirementsFor(agentCfg *config.Agent) llm.Requirements {
 	requirements := llm.Requirements{}
 	if agentCfg == nil {

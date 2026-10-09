@@ -29,6 +29,14 @@ agents:
 | budget | Rounds, tool calls and wall clock. A delegation can narrow them, never widen them. |
 | permissions | `filesystem: read`, `shell: deny`. Writes are rejected by validation. |
 
+`output_mode: structured` is a request, not a requirement. The runtime asks for
+the envelope in the prompt, and asks the provider to enforce it with a JSON
+schema **only when the agent has no tools**. Constrained decoding fixes the
+grammar of the reply to JSON, and a tool call is not part of that reply: a model
+asked for both answers immediately instead of reading anything, which turns a
+grounded review into an ungrounded one. The answer is parsed into the envelope
+either way, and a model that framed its JSON badly still contributes its text.
+
 ## Writing a good prompt
 
 A useful external subagent prompt has four parts, and the built-in prompts under

@@ -54,6 +54,7 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Codex integration: plugin manifest, bundled MCP server, skill | Done |
 | Claude Code integration: MCP configuration, project memory, skill | Done |
 | `pagent doctor`: offline diagnostics with local model probes | Done |
+| Acceptance chains: Codex / Claude Code to MCP to PawAgents to Ollama | Done |
 
 **Not implemented yet** — do not expect these to work:
 
@@ -1010,9 +1011,36 @@ Integration tests that require external services are opt-in, so CI never fails
 on a machine without Ollama:
 
 ```bash
-PAWAGENTS_TEST_OLLAMA=1 ./scripts/integration-test.sh
-PAWAGENTS_TEST_MCP=1 ./scripts/integration-test.sh
+PAWAGENTS_TEST_OLLAMA=1 ./scripts/integration-test.sh   # a real model
+PAWAGENTS_TEST_MCP=1 ./scripts/integration-test.sh      # a real MCP client
+PAWAGENTS_TEST_CLAUDE=1 ./scripts/integration-test.sh   # the real Claude Code CLI
+PAWAGENTS_TEST_CODEX=1 ./scripts/integration-test.sh    # the real Codex CLI
 ```
+
+A gated test skips with the reason it could not run, and the script prints every
+skip, so a green run never hides an unverified chain:
+
+| Gate | What it proves |
+| --- | --- |
+| `PAWAGENTS_TEST_OLLAMA=1` | `pagent provider test` passes against the real server, `pagent run` reviews a real uncommitted change with the read-only tools and reports locations that exist in the repository, the session is readable back, and a model that is not installed fails with the action that fixes it. |
+| `PAWAGENTS_TEST_MCP=1` | A real MCP client spawns `pagent mcp serve --stdio`, completes the handshake, validates every schema root, lists and describes the agents, reads a classified failure, and delegates a task that ends in a structured result. |
+| `PAWAGENTS_TEST_CLAUDE=1` | The Claude Code CLI accepts the registration and its own `mcp list` reports the server as connected, which is the host validating the handshake and the tool schemas. |
+| `PAWAGENTS_TEST_CODEX=1` | The Codex CLI accepts the registration and lists the server. |
+
+The model the review tests use defaults to the first model the server has
+installed; set `PAWAGENTS_TEST_MODEL` to choose one.
+
+The two chains the MVP promises are covered by these gates together:
+
+```
+Codex / Claude Code  ->  MCP  ->  PawAgents  ->  Ollama  ->  structured result
+     host gate + MCP gate + Ollama gate
+```
+
+A host's own model configuration is outside this project, so the last hop is
+verified by asking the local model through MCP rather than by driving the host's
+model loop. [Using with Claude Code](#using-with-claude-code) describes the
+interactive run.
 
 ### What the tests cover
 
@@ -1025,6 +1053,7 @@ PAWAGENTS_TEST_MCP=1 ./scripts/integration-test.sh
 | MCP tests | A real MCP client over an in-memory transport: discovery, the schemas a host validates, the delegation contract and classified failures. |
 | Documentation tests | The README's command list against the command tree, and every command's help text. |
 | `tests/` | The host integrations as data, and the end-to-end runs that need a built binary. |
+| `tests/integration`, `tests/mcp` | The acceptance chains above, behind the `integration` build tag. |
 | `scripts/check-docs.sh` | Every documented invocation, executed against a generated configuration. |
 
 See [AGENTS.md](AGENTS.md) for the architectural rules that changes must

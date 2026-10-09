@@ -132,16 +132,21 @@ func newTestRunner(t *testing.T, model *scriptedModel, options runnerTestOptions
 	registry := tools.NewRegistry()
 	registry.Register(tool)
 
-	grant := security.NewGrant([]string{tool.Name()}, nil, nil)
-
-	executor := tools.NewExecutor(registry, grant, tools.Env{})
+	var grant *security.Grant
+	var executor *tools.Executor
+	if !options.noTools {
+		grant = security.NewGrant([]string{tool.Name()}, nil, nil)
+		executor = tools.NewExecutor(registry, grant, tools.Env{})
+	}
 
 	profile := Profile{
 		Name:         "test-agent",
 		SystemPrompt: "You review code.",
 		OutputMode:   options.outputMode,
-		Tools:        grant.Names(),
-		Grant:        grant,
+	}
+	if grant != nil {
+		profile.Tools = grant.Names()
+		profile.Grant = grant
 	}
 	if profile.OutputMode == "" {
 		profile.OutputMode = OutputText
@@ -181,6 +186,8 @@ type runnerTestOptions struct {
 	toolErr          error
 	compactor        Compactor
 	recorder         Recorder
+	// noTools builds a runner for an agent without a tool grant.
+	noTools bool
 }
 
 func TestRunnerReturnsATextAnswer(t *testing.T) {
@@ -325,6 +332,7 @@ func TestRunnerSendsTheSchemaWhenTheModelSupportsIt(t *testing.T) {
 	runner, _ := newTestRunner(t, model, runnerTestOptions{
 		outputMode:       OutputStructured,
 		structuredOutput: true,
+		noTools:          true,
 	})
 	if _, err := runner.Run(context.Background(), Task{Instruction: "Review"}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -332,13 +340,68 @@ func TestRunnerSendsTheSchemaWhenTheModelSupportsIt(t *testing.T) {
 
 	request := model.requests[0]
 	if request.ResponseSchema == nil {
-		t.Fatalf("the schema must be sent to a capable provider")
+		t.Fatalf("the schema must be sent to a capable provider with no tools to call")
 	}
 	if request.ResponseSchemaName != structuredSchemaName {
 		t.Fatalf("schema name = %q", request.ResponseSchemaName)
 	}
 	if err := request.ResponseSchema.Validate(); err != nil {
 		t.Fatalf("the schema is invalid: %v", err)
+	}
+}
+
+// TestRunnerDoesNotConstrainATurnThatCanCallTools pins the rule that a response
+// schema and a tool call must not be asked for in the same turn.
+//
+// Constrained decoding fixes the grammar of the reply to JSON, and a tool call
+// is not part of that reply. A model asked for both answers immediately instead
+// of reading anything, which is how an ungrounded review is produced; Ollama
+// reproduces it exactly, so the rule is asserted here and exercised against a
+// real server in tests/integration.
+func TestRunnerDoesNotConstrainATurnThatCanCallTools(t *testing.T) {
+	model := &scriptedModel{
+		name:         "test",
+		capabilities: testCapabilities(),
+		scripts: [][]llm.Event{
+			toolCallEvents(llm.Usage{InputTokens: 50, OutputTokens: 10},
+				llm.ToolCall{ID: "1", Name: "repo.read", Arguments: `{"path":"a.go"}`}),
+			answerEvents(`{"summary":"One problem.","findings":[{"title":"unguarded"}]}`,
+				llm.Usage{InputTokens: 80, OutputTokens: 20}),
+		},
+	}
+
+	runner, tool := newTestRunner(t, model, runnerTestOptions{
+		outputMode:       OutputStructured,
+		structuredOutput: true,
+	})
+	result, err := runner.Run(context.Background(), Task{Instruction: "Review"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for index, request := range model.requests {
+		if request.ResponseSchema != nil {
+			t.Fatalf("round %d was sent a response schema although the agent may call "+
+				"a tool in it, which stops a model from calling one", index+1)
+		}
+		if len(request.Tools) == 0 {
+			t.Fatalf("round %d lost the tool definitions", index+1)
+		}
+	}
+
+	// The envelope is still requested, in the prompt, and still parsed.
+	system := model.requests[0].Messages[0].Text()
+	if !strings.Contains(system, "\"findings\"") {
+		t.Fatalf("the system prompt does not describe the envelope: %q", system)
+	}
+	if len(tool.seen) == 0 {
+		t.Fatal("the tool was never called, so the answer cannot be grounded")
+	}
+	if !result.Structured {
+		t.Fatalf("the answer was not parsed into the envelope: %+v", result)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Title != "unguarded" {
+		t.Fatalf("findings = %+v, want the parsed envelope", result.Findings)
 	}
 }
 
