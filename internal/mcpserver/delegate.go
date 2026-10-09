@@ -118,12 +118,8 @@ func (s *Server) delegateTask(ctx context.Context, _ *mcp.CallToolRequest, input
 	}
 
 	output := DelegateTaskOutput{Result: *result}
-	output.ErrorKind = string(apperrors.KindOf(runErr))
-	if runErr == nil && !completedStatus(result.Status) {
-		// A failure without a classified error still has a status that says what
-		// happened, and a host branching on the kind must not see an empty one.
-		output.ErrorKind = string(kindForStatus(result.Status))
-	}
+	kind := effectiveKind(runErr, result.Status)
+	output.ErrorKind = string(kind)
 	output.Provider = result.Provider
 	output.SessionID = result.SessionID
 
@@ -133,14 +129,16 @@ func (s *Server) delegateTask(ctx context.Context, _ *mcp.CallToolRequest, input
 		"session", result.SessionID,
 		"rounds", result.Usage.Rounds)
 
-	if output.ErrorKind == "" {
+	if kind == "" {
 		return nil, output, nil
 	}
 
 	// The envelope is the payload, but the call failed: the flag is what stops a
-	// host from reading a budget failure as a finished analysis.
+	// host from reading a budget failure as a finished analysis. The error
+	// carries the same kind as the envelope, because that is the value a host
+	// branches on when it reads the CallTool result rather than the payload.
 	failure := &mcp.CallToolResult{}
-	failure.SetError(apperrors.New(apperrors.KindOf(runErr), "mcpserver.delegate_task",
+	failure.SetError(apperrors.New(kind, "mcpserver.delegate_task",
 		"agent %q reported %s", result.Agent, result.Status))
 	return failure, output, nil
 }
@@ -216,6 +214,23 @@ func (s *Server) buildRequest(input DelegateTaskInput) (orchestrator.Request, er
 // completedStatus reports whether a result status means the agent answered.
 func completedStatus(status string) bool {
 	return status == agent.StatusCompleted
+}
+
+// effectiveKind returns the single classification of a finished delegation.
+//
+// The runtime normally returns a classified error, and that kind is the answer.
+// A task that failed without one still carries a status that says what happened,
+// so the status is mapped rather than leaving the kind empty: a host branches on
+// the kind, and an empty one reads as a finished analysis. Both the envelope and
+// the MCP error are built from this one value so they cannot disagree.
+func effectiveKind(runErr error, status string) apperrors.Kind {
+	if runErr != nil {
+		return apperrors.KindOf(runErr)
+	}
+	if completedStatus(status) {
+		return ""
+	}
+	return kindForStatus(status)
 }
 
 // kindForStatus classifies a failure that arrived without an error.

@@ -21,7 +21,7 @@ later changes nothing a host sees.
 | --- | --- | --- |
 | `list_agents` | — | `{"agents": [...]}` with name, description, model alias, tools, output mode, `ready` and `confirmed`. |
 | `get_agent` | `{"name": "..."}` | The full profile: targets, budget, permissions, prompt source, missing capabilities. |
-| `delegate_task` | The delegation contract | The structured result envelope, plus `error_kind` when the task did not complete. |
+| `delegate_task` | The delegation contract | The structured result envelope, plus `error_kind` when the task did not complete. The CallTool failure carries the same kind, so a host can branch on either. |
 
 Every tool is annotated read-only, which is what lets a host call one without
 asking its user for permission.

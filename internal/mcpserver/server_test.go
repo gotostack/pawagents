@@ -577,14 +577,69 @@ func TestDelegateTaskReportsAFailureAfterItStarted(t *testing.T) {
 	}
 }
 
+// TestDelegateTaskClassifiesAStatusWithoutAnError pins the one classification a
+// host sees when the runtime returns a result and no error. The status is mapped
+// once, and the envelope and the MCP error both carry that same kind: a host
+// that reads the CallTool failure must not see an empty one while the payload
+// names a budget or a timeout.
 func TestDelegateTaskClassifiesAStatusWithoutAnError(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   string
+		wantKind apperrors.Kind
+	}{
+		{"budget exceeded", agent.StatusBudgetExceeded, apperrors.KindBudgetExceeded},
+		{"timeout", agent.StatusTimeout, apperrors.KindTimeout},
+		{"cancelled", agent.StatusCancelled, apperrors.KindCancelled},
+		{"failed", agent.StatusFailed, apperrors.KindAgent},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			runtime := &fakeRuntime{
+				profiles: []orchestrator.AgentProfile{testProfile("reviewer")},
+				result: &agent.Result{
+					Status:    testCase.status,
+					Agent:     "reviewer",
+					Summary:   "Stopped before the answer.",
+					Error:     "the task did not finish",
+					SessionID: "agt_0123456789abcdef",
+				},
+			}
+			session := newTestServer(t, runtime)
+
+			var output DelegateTaskOutput
+			result := callTool(t, session, ToolDelegateTask, map[string]any{
+				"agent": "reviewer",
+				"task":  "Review the changes",
+			}, &output)
+
+			if !result.IsError {
+				t.Fatal("a failed delegation was reported as a success")
+			}
+			if output.ErrorKind != string(testCase.wantKind) {
+				t.Fatalf("envelope error kind = %q, want %s", output.ErrorKind, testCase.wantKind)
+			}
+			if !strings.HasPrefix(text(result), string(testCase.wantKind)+": ") {
+				t.Fatalf("failure = %q, want the %s classification the envelope names",
+					text(result), testCase.wantKind)
+			}
+			// The partial answer and the session stay available: the failure is
+			// worth reporting, not worth discarding.
+			if output.Summary == "" || output.SessionID == "" {
+				t.Fatalf("the partial result was discarded: %+v", output)
+			}
+		})
+	}
+}
+
+// TestDelegateTaskAcceptsACompletedStatusWithoutAnError keeps the other half of
+// the contract: a task that answered is not an error, whichever kind an empty
+// status would have mapped to.
+func TestDelegateTaskAcceptsACompletedStatusWithoutAnError(t *testing.T) {
 	runtime := &fakeRuntime{
 		profiles: []orchestrator.AgentProfile{testProfile("reviewer")},
-		result: &agent.Result{
-			Status: agent.StatusTimeout,
-			Agent:  "reviewer",
-			Error:  "the task deadline passed",
-		},
+		result:   &agent.Result{Status: agent.StatusCompleted, Agent: "reviewer", Summary: "All good."},
 	}
 	session := newTestServer(t, runtime)
 
@@ -594,11 +649,40 @@ func TestDelegateTaskClassifiesAStatusWithoutAnError(t *testing.T) {
 		"task":  "Review the changes",
 	}, &output)
 
-	if !result.IsError {
-		t.Fatal("a timed out delegation was reported as a success")
+	if result.IsError {
+		t.Fatalf("a completed task was reported as a failure: %s", text(result))
 	}
-	if output.ErrorKind != string(apperrors.KindTimeout) {
-		t.Fatalf("error kind = %q, want %s", output.ErrorKind, apperrors.KindTimeout)
+	if output.ErrorKind != "" {
+		t.Fatalf("error kind = %q, want none", output.ErrorKind)
+	}
+}
+
+func TestEffectiveKind(t *testing.T) {
+	classified := apperrors.New(apperrors.KindPermission, "tools.executor", "repo.read is not granted")
+
+	cases := []struct {
+		name   string
+		runErr error
+		status string
+		want   apperrors.Kind
+	}{
+		{"a classified error wins", classified, agent.StatusFailed, apperrors.KindPermission},
+		{"its kind is used even when the status says otherwise", classified, agent.StatusCompleted, apperrors.KindPermission},
+		{"an unclassified error is internal", errors.New("the endpoint hung up"), agent.StatusFailed, apperrors.KindInternal},
+		{"a completed status needs no kind", nil, agent.StatusCompleted, ""},
+		{"a budget status is mapped", nil, agent.StatusBudgetExceeded, apperrors.KindBudgetExceeded},
+		{"a timeout status is mapped", nil, agent.StatusTimeout, apperrors.KindTimeout},
+		{"a cancelled status is mapped", nil, agent.StatusCancelled, apperrors.KindCancelled},
+		{"a failed status is mapped", nil, agent.StatusFailed, apperrors.KindAgent},
+		{"an unknown status still classifies", nil, "something-new", apperrors.KindInternal},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := effectiveKind(testCase.runErr, testCase.status); got != testCase.want {
+				t.Fatalf("effectiveKind() = %q, want %q", got, testCase.want)
+			}
+		})
 	}
 }
 

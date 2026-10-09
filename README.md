@@ -743,7 +743,9 @@ is reported in one of three ways:
 - **the task never started** (an unknown agent, an unusable workspace): the call
   fails and the message starts with the classified error kind;
 - **the task ran and failed** (a budget, a timeout, a provider error): the call
-  fails, and the envelope still carries the partial answer and the session id;
+  fails, and the envelope still carries the partial answer and the session id.
+  `error_kind` and the CallTool failure name the same kind, whether the runtime
+  returned a classified error or only a status;
 - **the task ran and completed**: the envelope is the result.
 
 ### Readiness
