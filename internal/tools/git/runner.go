@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -106,6 +107,10 @@ func (r *Runner) Run(ctx context.Context, args ...string) (string, error) {
 	command.Stdout = stdout
 	command.Stderr = stderr
 
+	// The child gets an argument vector plus an environment the runner chose,
+	// so nothing between the caller and git can redirect the command.
+	command.Env = r.environment()
+
 	err := command.Run()
 
 	if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
@@ -126,6 +131,41 @@ func (r *Runner) Run(ctx context.Context, args ...string) (string, error) {
 		output += fmt.Sprintf("\n... [git output truncated at %s]", humanBytes(int64(r.maxOutputBytes)))
 	}
 	return output, nil
+}
+
+// environment builds the environment for a git child process.
+//
+// The parent environment is deliberately not inherited. git lets GIT_DIR,
+// GIT_WORK_TREE, GIT_INDEX_FILE and GIT_COMMON_DIR override the repository it
+// works on, and `-C` only changes the directory git starts in: a deployment
+// that exported one of them would let a fixed, read-only subcommand read a
+// repository the workspace guard never approved.
+//
+// Only the variables git needs to find its binary and the user's configuration
+// are passed on. Every variable that selects a repository or an object store is
+// therefore absent, and the remaining ones are set to the value the runner
+// chose rather than to whatever the process happened to have.
+func (r *Runner) environment() []string {
+	env := make([]string, 0, 7)
+	for _, name := range []string{"PATH", "HOME", "TMPDIR"} {
+		if value, ok := os.LookupEnv(name); ok && value != "" {
+			env = append(env, name+"="+value)
+		}
+	}
+
+	return append(env,
+		// A credential prompt would wait for a terminal the task does not have.
+		"GIT_TERMINAL_PROMPT=0",
+		// --no-pager already disables the pager; a configuration file the user
+		// controls must not be able to start one anyway.
+		"GIT_PAGER=cat",
+		// The tools only read, so git must not refresh and write the index.
+		"GIT_OPTIONAL_LOCKS=0",
+		// Machine-wide configuration can point hooks, diff drivers and
+		// template directories at other programs; a task has no business
+		// inheriting it.
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
 }
 
 // failure turns a git exit status into a classified error.
@@ -216,18 +256,23 @@ type limitedBuffer struct {
 }
 
 // Write implements io.Writer.
+//
+// Bytes past the limit are dropped, but the call still reports every byte as
+// written. A short count would make os/exec stop draining the pipe half way
+// through, and the child would die of SIGPIPE: a command whose output is merely
+// long would be reported as a command that failed.
 func (b *limitedBuffer) Write(data []byte) (int, error) {
-	remaining := b.limit - b.buffer.Len()
-	if remaining <= 0 {
+	written := len(data)
+	switch remaining := b.limit - b.buffer.Len(); {
+	case remaining <= 0:
 		b.truncated = true
-		return len(data), nil
-	}
-	if len(data) > remaining {
+	case len(data) > remaining:
 		b.truncated = true
-		data = data[:remaining]
+		_, _ = b.buffer.Write(data[:remaining])
+	default:
+		_, _ = b.buffer.Write(data)
 	}
-	_, _ = b.buffer.Write(data)
-	return len(data), nil
+	return written, nil
 }
 
 // String returns what was captured.

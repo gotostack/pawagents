@@ -65,6 +65,37 @@ func newRepo(t *testing.T) (tools.Env, string) {
 	return tools.Env{Workspace: workspace, MaxOutputBytes: 1 << 20}, root
 }
 
+// newMarkedRepo builds a temporary repository whose paths and commit subject
+// carry a marker, so a test can tell which repository a git command read.
+func newMarkedRepo(t *testing.T, marker string) (tools.Env, string) {
+	t.Helper()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+
+	root := t.TempDir()
+	write(t, filepath.Join(root, marker+".go"), "package main\n\n// "+marker+"\n")
+
+	gitRun(t, root, "init", "--initial-branch=main")
+	gitRun(t, root, "config", "user.email", "test@example.com")
+	gitRun(t, root, "config", "user.name", "PawAgents Test")
+	gitRun(t, root, "config", "commit.gpgsign", "false")
+	gitRun(t, root, "add", ".")
+	gitRun(t, root, "commit", "-m", "feat: "+marker+" commit")
+
+	// An uncommitted change gives every git tool something to report.
+	write(t, filepath.Join(root, marker+".go"), "package main\n\n// "+marker+" changed\n")
+
+	workspace, err := security.NewWorkspace(root, security.WorkspaceOptions{})
+	if err != nil {
+		t.Fatalf("NewWorkspace() = %v", err)
+	}
+	t.Cleanup(func() { _ = workspace.Close() })
+
+	return tools.Env{Workspace: workspace, MaxOutputBytes: 1 << 20}, root
+}
+
 func write(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -298,6 +329,196 @@ func TestValidatePath(t *testing.T) {
 	got, err := runner.ValidatePath(env.Workspace, filepath.Join(root, "lib", "a.go"))
 	if err != nil || got != "lib/a.go" {
 		t.Fatalf("ValidatePath(absolute) = %q, %v", got, err)
+	}
+}
+
+// TestRunnerIgnoresInheritedRepositoryVariables proves the git tools read the
+// guarded workspace even when whatever started PawAgents exported the variables
+// git uses to select a repository. The workspace and the repository the
+// environment points at are two different temporary repositories.
+func TestRunnerIgnoresInheritedRepositoryVariables(t *testing.T) {
+	const (
+		workspaceMarker = "WorkspaceMarker"
+		externalMarker  = "ExternalMarker"
+	)
+
+	env, _ := newMarkedRepo(t, workspaceMarker)
+	_, externalRoot := newMarkedRepo(t, externalMarker)
+
+	externalGitDir := filepath.Join(externalRoot, ".git")
+	t.Setenv("GIT_DIR", externalGitDir)
+	t.Setenv("GIT_WORK_TREE", externalRoot)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(externalGitDir, "index"))
+	t.Setenv("GIT_COMMON_DIR", externalGitDir)
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(externalGitDir, "objects"))
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", filepath.Join(externalGitDir, "objects"))
+	t.Setenv("GIT_NAMESPACE", "external")
+
+	everyTool := []struct {
+		name string
+		tool tools.Tool
+	}{
+		{DiffToolName, Diff{}},
+		{ShowToolName, Show{}},
+		{StatusToolName, Status{}},
+		{LogToolName, Log{}},
+	}
+
+	for _, entry := range everyTool {
+		t.Run(entry.name, func(t *testing.T) {
+			result := run(t, entry.tool, env, `{}`)
+			if !strings.Contains(result.Content, workspaceMarker) {
+				t.Fatalf("content = %q, want the %s repository", result.Content, workspaceMarker)
+			}
+			if strings.Contains(result.Content, externalMarker) {
+				t.Fatalf("content = %q, must not read the %s repository", result.Content, externalMarker)
+			}
+		})
+	}
+
+	// The runner must not rewrite the environment of its own process.
+	if got := os.Getenv("GIT_DIR"); got != externalGitDir {
+		t.Fatalf("GIT_DIR = %q, the runner must leave the parent environment alone", got)
+	}
+}
+
+// TestRunnerBuildsAMinimalEnvironment checks the allowlist directly: the
+// repository-selecting variables never reach the child, the safety settings do,
+// and nothing is inherited by accident.
+func TestRunnerBuildsAMinimalEnvironment(t *testing.T) {
+	env, _ := newRepo(t)
+	runner, err := NewRunner(env.Workspace)
+	if err != nil {
+		t.Fatalf("NewRunner() = %v", err)
+	}
+
+	poisoned := []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+		"GIT_EXEC_PATH", "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+		"GIT_ATTR_NOSYSTEM",
+	}
+	for _, name := range poisoned {
+		t.Setenv(name, "poisoned")
+	}
+
+	// The variables the runner sets on purpose, in addition to the handful of
+	// harmless platform ones it passes on.
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true,
+		"GIT_TERMINAL_PROMPT": true, "GIT_PAGER": true,
+		"GIT_OPTIONAL_LOCKS": true, "GIT_CONFIG_NOSYSTEM": true,
+	}
+
+	present := make(map[string]bool)
+	for _, entry := range runner.environment() {
+		name, _, _ := strings.Cut(entry, "=")
+		present[name] = true
+		if !allowed[name] {
+			t.Fatalf("the child environment must not carry %s", name)
+		}
+	}
+
+	// The runner builds the child environment; it must not edit its own.
+	for _, name := range poisoned {
+		if got := os.Getenv(name); got != "poisoned" {
+			t.Fatalf("%s = %q, the runner must leave the parent environment alone", name, got)
+		}
+	}
+
+	for _, name := range []string{
+		"PATH", "GIT_TERMINAL_PROMPT", "GIT_PAGER", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_NOSYSTEM",
+	} {
+		if !present[name] {
+			t.Fatalf("the child environment must define %s", name)
+		}
+	}
+
+	// A poisoned parent environment must still leave the tools working.
+	output, err := runner.Run(context.Background(), "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if !strings.Contains(output, "main.go") {
+		t.Fatalf("git status = %q, want the workspace repository", output)
+	}
+}
+
+// TestRunnerDoesNotUseAShell pins the rule that git is started directly: an
+// argument is an argument, never a command a shell could run.
+func TestRunnerDoesNotUseAShell(t *testing.T) {
+	env, root := newRepo(t)
+	runner, err := NewRunner(env.Workspace)
+	if err != nil {
+		t.Fatalf("NewRunner() = %v", err)
+	}
+
+	canary := filepath.Join(root, "canary")
+	if _, err := runner.Run(context.Background(), "status", "; touch "+canary); err == nil {
+		// git may accept the argument as a pathspec; what matters is that no
+		// shell ran it.
+		t.Log("git accepted the argument as a pathspec")
+	}
+	if _, statErr := os.Stat(canary); statErr == nil {
+		t.Fatalf("the argument was executed: %s exists, so git ran through a shell", canary)
+	}
+}
+
+// TestRunnerTimesOutASlowCommand keeps the timeout behaviour: a git command
+// that never returns is stopped and reported as a timeout.
+func TestRunnerTimesOutASlowCommand(t *testing.T) {
+	if DefaultTimeout != 30*time.Second {
+		t.Fatalf("DefaultTimeout = %s, want the documented 30s", DefaultTimeout)
+	}
+
+	env, _ := newRepo(t)
+	runner, err := NewRunner(env.Workspace)
+	if err != nil {
+		t.Fatalf("NewRunner() = %v", err)
+	}
+
+	// A program that never exits stands in for a git command blocked on a
+	// hook or a stuck filesystem. The short timeout only keeps the test fast.
+	blocking, err := exec.LookPath("yes")
+	if err != nil {
+		t.Skip("the yes program is not installed")
+	}
+	runner.binary = blocking
+	runner.timeout = 200 * time.Millisecond
+
+	started := time.Now()
+	_, err = runner.Run(context.Background(), "status")
+	elapsed := time.Since(started)
+
+	if !apperrors.IsKind(err, apperrors.KindTimeout) {
+		t.Fatalf("kind = %q, want a timeout error (%v)", apperrors.KindOf(err), err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("the command ran for %s, want it stopped at its timeout", elapsed)
+	}
+}
+
+// TestRunnerTruncatesLargeOutput keeps the output cap: a command that produces
+// more than the limit is cut and says so.
+func TestRunnerTruncatesLargeOutput(t *testing.T) {
+	env, _ := newRepo(t)
+	runner, err := NewRunner(env.Workspace)
+	if err != nil {
+		t.Fatalf("NewRunner() = %v", err)
+	}
+	runner.maxOutputBytes = 64
+
+	output, err := runner.Run(context.Background(), "log", "-p")
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if !strings.Contains(output, "[git output truncated at 64 B]") {
+		t.Fatalf("output = %q, want the truncation notice", output)
+	}
+
+	captured, _, _ := strings.Cut(output, "\n... [git output truncated")
+	if len(captured) != 64 {
+		t.Fatalf("captured %d bytes, want exactly the 64 byte limit", len(captured))
 	}
 }
 

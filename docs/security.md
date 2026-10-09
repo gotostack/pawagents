@@ -16,6 +16,13 @@ never runs a shell command and never holds write permissions:
 - `git.*` runs a fixed subcommand with a validated argument vector; a revision is
   restricted to the characters git uses, a path is passed after `--`, and nothing
   is ever interpolated into a shell.
+- Every git command gets an environment the runner builds itself rather than the
+  environment PawAgents was started with. Only `PATH`, `HOME` and `TMPDIR` are
+  passed on, so an inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+  `GIT_COMMON_DIR` or object-store variable cannot point a fixed subcommand at
+  another repository. Prompts and pagers are disabled, machine-wide git
+  configuration is ignored, and git is told not to take optional locks, so a
+  read-only tool call cannot rewrite the index.
 
 ## Workspace escape is structurally impossible
 
