@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "pawagents": {
+      "type": "stdio",
+      "command": "pagent",
+      "args": [
+        "mcp",
+        "serve",
+        "--stdio"
+      ],
+      "timeout": 900000
+    }
+  }
+}

@@ -52,7 +52,7 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Context compaction with a deterministic summary | Done |
 | MCP server: `list_agents`, `get_agent`, `delegate_task` over stdio | Done |
 | Codex integration: plugin manifest, bundled MCP server, skill | Done |
-| Claude Code integration guides and examples | Planned |
+| Claude Code integration: MCP configuration, project memory, skill | Done |
 
 **Not implemented yet** — do not expect these to work:
 
@@ -785,6 +785,50 @@ Two things to remember when reading a result:
 - **A failure is classified.** The message starts with the error kind, and a
   delegation that ran but failed still reports the partial answer and the
   session id, which `pagent session show` can re-read.
+
+---
+
+## Using with Claude Code
+
+Register the server once for yourself:
+
+```bash
+claude mcp add pawagents -- pagent mcp serve --stdio
+claude mcp list
+```
+
+Or share it with a team through the project configuration, which Claude Code
+approves on first use:
+
+```bash
+cp integrations/claude-code/.mcp.json.example /path/to/project/.mcp.json
+```
+
+The entry sets a per-call `timeout` of fifteen minutes, because a delegation is
+a whole agent run: the field is milliseconds, and without it a stdio server falls
+back to `MCP_TOOL_TIMEOUT`. Raise it for agents whose `timeout_sec` is larger.
+
+Both routes name the server `pawagents`, so the tools are callable as
+`mcp__pawagents__list_agents`, `mcp__pawagents__get_agent` and
+`mcp__pawagents__delegate_task`.
+
+Install the skill so Claude Code knows when delegating is worth it, and ask:
+
+```bash
+cp -R integrations/claude-code/.claude/skills/pawagents ~/.claude/skills/pawagents
+```
+
+```text
+Use PawAgents reviewer to independently review my current changes, then verify
+its findings before acting on them.
+
+/pawagents
+```
+
+`integrations/claude-code/` holds the skill, the project `.mcp.json` example, a
+`CLAUDE.md` snippet and a README with the verification and troubleshooting
+steps. The skill states the same rules as the Codex skill, so both hosts behave
+the same way for the same request.
 
 ---
 

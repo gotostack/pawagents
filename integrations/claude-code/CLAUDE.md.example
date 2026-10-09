@@ -1,0 +1,20 @@
+## PawAgents
+
+This repository can delegate a bounded task to an independent, read-only
+subagent through the `pawagents` MCP server. Use it when a second point of view
+from a different model or provider would improve the work: an independent
+review, a second opinion on a design, or a cross-check of a conclusion you are
+about to act on.
+
+- State one bounded question, the workspace, and the constraints the answer must
+  respect (for example, cite `path:line`).
+- Do not delegate trivial operations; reading one file does not need a subagent.
+- PawAgents is advisory and read-only. Verify critical findings before modifying
+  files, and say which findings you verified.
+
+Use the `pawagents` skill for the full workflow, or ask directly:
+
+```text
+Use PawAgents reviewer to independently review my current changes, then verify
+its findings before acting on them.
+```

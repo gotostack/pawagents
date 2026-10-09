@@ -127,6 +127,18 @@ type AgentDetail struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// ListAgentsOutput is the list_agents payload.
+//
+// The agents are wrapped in an object rather than returned as a bare array
+// because the root of a structured output schema has to be a JSON object: a Go
+// slice produces a root type of ["null","array"], and a host that validates
+// the schema it is handed rejects the tool. Claude Code does exactly that and
+// reports "Invalid input (at tools.N.outputSchema.type)", which drops the whole
+// server's tool list.
+type ListAgentsOutput struct {
+	Agents []AgentSummary `json:"agents"`
+}
+
 // listAgentsInput is intentionally empty: listing agents takes no arguments, so
 // that a host can always ask what is available.
 type listAgentsInput struct{}
@@ -158,14 +170,14 @@ func (s *Server) registerAgentTools() {
 }
 
 // listAgents implements the list_agents tool.
-func (s *Server) listAgents(ctx context.Context, _ *mcp.CallToolRequest, _ listAgentsInput) (*mcp.CallToolResult, []AgentSummary, error) {
+func (s *Server) listAgents(ctx context.Context, _ *mcp.CallToolRequest, _ listAgentsInput) (*mcp.CallToolResult, ListAgentsOutput, error) {
 	profiles := s.runtime.Profiles()
 
 	summaries := make([]AgentSummary, 0, len(profiles))
 	for _, profile := range profiles {
 		summaries = append(summaries, s.summarize(ctx, profile))
 	}
-	return nil, summaries, nil
+	return nil, ListAgentsOutput{Agents: summaries}, nil
 }
 
 // getAgent implements the get_agent tool.

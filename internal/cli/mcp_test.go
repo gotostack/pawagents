@@ -121,15 +121,16 @@ func TestMCPListsTheConfiguredAgents(t *testing.T) {
 		t.Fatalf("list_agents failed: %s", mcpText(result))
 	}
 
-	var agents []mcpserver.AgentSummary
+	var payload mcpserver.ListAgentsOutput
 	encoded, err := json.Marshal(result.StructuredContent)
 	if err != nil {
 		t.Fatalf("cannot encode the payload: %v", err)
 	}
-	if err := json.Unmarshal(encoded, &agents); err != nil {
+	if err := json.Unmarshal(encoded, &payload); err != nil {
 		t.Fatalf("cannot decode the payload: %v\n%s", err, encoded)
 	}
 
+	agents := payload.Agents
 	if len(agents) != 1 {
 		t.Fatalf("agents = %d, want 1:\n%s", len(agents), encoded)
 	}

@@ -242,6 +242,41 @@ func TestToolDiscovery(t *testing.T) {
 	}
 }
 
+// TestToolSchemasHaveAnObjectRoot guards a host compatibility trap.
+//
+// A host validates the schemas it is handed before it exposes a server's tools.
+// Claude Code rejects a root type that is not a plain object, and a root of
+// ["null","array"] - what a bare Go slice produces - makes it drop the whole
+// tool list with "Invalid input (at tools.N.outputSchema.type)". The shape of
+// the payload must therefore never leak into the schema root.
+func TestToolSchemasHaveAnObjectRoot(t *testing.T) {
+	session := newTestServer(t, &fakeRuntime{profiles: []orchestrator.AgentProfile{testProfile("reviewer")}})
+
+	result, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	for _, tool := range result.Tools {
+		for name, schema := range map[string]any{
+			"inputSchema":  tool.InputSchema,
+			"outputSchema": tool.OutputSchema,
+		} {
+			if schema == nil {
+				continue
+			}
+			object, ok := schema.(map[string]any)
+			if !ok {
+				t.Fatalf("%s: %s is not an object schema: %T", tool.Name, name, schema)
+			}
+			if kind, ok := object["type"].(string); !ok || kind != "object" {
+				t.Fatalf("%s: %s root type = %v, want the string \"object\"",
+					tool.Name, name, object["type"])
+			}
+		}
+	}
+}
+
 func TestListAgents(t *testing.T) {
 	runtime := &fakeRuntime{
 		profiles: []orchestrator.AgentProfile{
@@ -252,12 +287,13 @@ func TestListAgents(t *testing.T) {
 	}
 	session := newTestServer(t, runtime)
 
-	var agents []AgentSummary
-	result := callTool(t, session, ToolListAgents, map[string]any{}, &agents)
+	var payload ListAgentsOutput
+	result := callTool(t, session, ToolListAgents, map[string]any{}, &payload)
 	if result.IsError {
 		t.Fatalf("list_agents failed: %s", text(result))
 	}
 
+	agents := payload.Agents
 	if len(agents) != 2 {
 		t.Fatalf("agents = %d, want 2", len(agents))
 	}
@@ -333,8 +369,9 @@ func TestListAgentsExplainsAnAgentThatCannotRun(t *testing.T) {
 			}
 			session := newTestServer(t, runtime)
 
-			var agents []AgentSummary
-			callTool(t, session, ToolListAgents, map[string]any{}, &agents)
+			var payload ListAgentsOutput
+			callTool(t, session, ToolListAgents, map[string]any{}, &payload)
+			agents := payload.Agents
 			if len(agents) != 1 {
 				t.Fatalf("agents = %d, want 1", len(agents))
 			}
