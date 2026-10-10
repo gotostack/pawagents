@@ -36,16 +36,22 @@ Every filesystem access goes through one guard in `internal/security`, built on
 - Symlinks are not followed by default. `security.follow_symlinks: true` allows a
   relative symlink whose target stays inside the workspace; an absolute symlink
   is never followed, even when it points inside.
-- The guard always refuses common credential files, including `.env` and
-  `.env.*`, private-key/certificate files (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
-  `*.p8`, `*.jks`), common SSH private-key names, and credential files such as
-  `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, cloud credentials, and
-  service-account JSON files. These defaults apply even when a caller supplies
-  its own `blocked_paths`, and matching is case-insensitive for consistent
-  protection on case-insensitive filesystems.
-- `security.blocked_paths` adds custom globs to that built-in deny list; it
-  cannot remove the built-in credential protections. Blocked files are refused
-  by read/stat operations and omitted from directory listings and searches.
+- Sensitive files are denied by default, at any depth and case-insensitively.
+  The guard always refuses:
+  - environment files: `.env`, `.env.*`, `.envrc`;
+  - keys and certificates: `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.p8`, `*.jks`,
+    and the SSH private keys `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`;
+  - credential files: `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`,
+    `.vault-token`, `credentials`, `credentials.json`, `*_credentials.json`,
+    `application_default_credentials.json`, `service-account*.json`,
+    `.aws/credentials`, `.docker/config.json`, `.kube/config` and
+    `.config/gcloud/application_default_credentials.json`.
+
+  That list is `security.DefaultBlockedPaths()`, and it is always in force.
+- `security.blocked_paths` adds patterns to the list; it cannot remove a built-in
+  one, because the guard merges the caller's patterns with the built-in set. A
+  blocked path is refused by read and stat, and it is left out of directory
+  listings and of the `repo.search` walk, so the name is not disclosed either.
 - Reads are bounded by `security.max_file_size`, and tool output by the agent
   budget, so no single call can fill the context window.
 
@@ -101,7 +107,7 @@ coding agent can branch on the kind without parsing prose.
 | --- | --- |
 | `security.workspace_root` | The default directory a delegation may read. |
 | `security.allow_outside_workspace` | Turns the sandbox into "the whole filesystem, read-only". Reported as a warning by `pagent doctor`. |
-| `security.blocked_paths` | Additional globs refused even inside the workspace; built-in credential-file rules cannot be removed. |
+| `security.blocked_paths` | Additional globs refused even inside the workspace. The built-in sensitive-file rules are always added to this list and cannot be removed; `docs/security.md` lists them. |
 | `security.allowed_env` | The only environment variables an agent may be told about. |
 | `agents.<name>.tools` | The grant. An agent can only call what it lists. |
 | `agents.<name>.permissions` | Must stay read-only. |

@@ -52,13 +52,19 @@ telemetry:
 | `PAWAGENTS_TELEMETRY_ENABLED` | Overrides `telemetry.enabled`. |
 | `PAWAGENTS_ALLOW_OUTSIDE_WORKSPACE` | Overrides `security.allow_outside_workspace`. |
 
-The Workspace Guard always denies common credential files, including `.env`
-and `.env.*`, private-key/certificate files (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
-`*.p8`, `*.jks`), common SSH private-key names, and files such as `.netrc`,
-`.npmrc`, `.pypirc`, `.git-credentials`, cloud credentials, and service-account
-JSON files. `security.blocked_paths` only adds rules; it cannot disable these
-built-in protections. Repository tools apply the same deny rules to read, stat,
-list, and search, with case-insensitive matching for filesystem portability.
+The Workspace Guard always denies sensitive files, whatever
+`security.blocked_paths` contains: environment files (`.env`, `.env.*`,
+`.envrc`), keys and certificates (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.p8`,
+`*.jks`) and the SSH private keys, and credential files such as `.netrc`,
+`.npmrc`, `.pypirc`, `.git-credentials`, `.vault-token`, `credentials`,
+`credentials.json`, `*_credentials.json`, `service-account*.json`,
+`.aws/credentials`, `.docker/config.json`, `.kube/config` and
+`.config/gcloud/application_default_credentials.json`.
+`security.blocked_paths` only adds rules; it cannot disable these built-in
+protections. Repository tools apply the same deny rules to read, stat, list and
+search, at any depth and with case-insensitive matching, so a denial cannot be
+bypassed by changing the spelling of a name. [docs/security.md](security.md)
+documents the policy in full and names the function that defines the list.
 
 ## Providers
 

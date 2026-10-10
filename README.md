@@ -54,13 +54,35 @@ current tree actually implements; the [Roadmap](#roadmap) lists what is next.
 | Codex integration: plugin manifest, bundled MCP server, skill | Done |
 | Claude Code integration: MCP configuration, project memory, skill | Done |
 | `pagent doctor`: offline diagnostics with local model probes | Done |
-| Acceptance chains: Codex / Claude Code to MCP to PawAgents to Ollama | Done |
+| Acceptance chain tests: Codex / Claude Code to MCP to PawAgents to Ollama | Implemented, gated; see [Acceptance status](#acceptance-status) |
 
 **Not implemented yet** — do not expect these to work:
 
 An HTTP transport for `pagent mcp serve`, `pagent session continue`, and the
 `continue_task`, `get_task` and `cancel_task` MCP tools. They are described in
 the roadmap below, and each one is documented here as soon as it lands.
+
+### Acceptance status
+
+The chains above are covered by gated tests; having the test is not the same as
+having run it. A gate that is not set skips, and a skipped chain is unverified
+rather than verified. The results below are the last execution, on 2026-10-10,
+of `go test -tags=integration ./tests/...` with `HOME` and `PAWAGENTS_HOME`
+pointing at a scratch directory, so no host configuration was touched:
+
+| Gate | Chain | Result |
+| --- | --- | --- |
+| — (no gate) | The nine artifact checks over `integrations/` (manifests, skills, MCP configuration, READMEs) | PASS |
+| — (no gate) | The ten chain tests without their service | SKIPPED, each with the reason it could not run |
+| `PAWAGENTS_TEST_OLLAMA=1` | PawAgents to Ollama: `provider test` against the real server, a review run that uses the read-only tools and reports locations that exist, the session read back through the CLI, and the error for a model that is not installed | PASS, 4 tests |
+| `PAWAGENTS_TEST_MCP=1` | Host to MCP over stdio: handshake, every schema root, `list_agents`, `get_agent`, a classified failure | PASS, 3 tests; the delegation test skips without the Ollama gate |
+| `PAWAGENTS_TEST_MCP=1 PAWAGENTS_TEST_OLLAMA=1` | `delegate_task` end to end, ending in a structured result | FAIL on the first attempt (`TimeoutError` after 140s) and PASS when re-run (110s): this machine's model crossed the fixture's 120s per-request provider timeout. The runtime classified it correctly; the chain is verified but the test is time-sensitive on slow hardware |
+| `PAWAGENTS_TEST_CLAUDE=1` | The Claude Code CLI accepts the registration and its own `mcp list` reports the server as connected | PASS |
+| `PAWAGENTS_TEST_CODEX=1` | The Codex CLI accepts the registration and lists the server | UNVERIFIED: the `codex` on `PATH` does not run on this machine (its vendored binary is missing), so the test skips instead of passing |
+
+The machine was macOS with Go 1.26.8, Ollama 0.40.2 at `http://127.0.0.1:11434`
+and one local model installed. The durations are that machine's model latency,
+not a property of the project.
 
 ---
 
@@ -865,8 +887,17 @@ the same way for the same request.
 - **Symlinks are not followed by default.** `security.follow_symlinks: true`
   allows a symlink whose target stays inside the workspace. An absolute symlink
   is never followed, even when it points inside; use a relative symlink.
-- **Blocked paths** (`security.blocked_paths`) are refused even inside the
-  workspace, for example `*/.env` or `**/*.pem`.
+- **Sensitive files are denied by default**, at any depth and case-insensitively:
+  `.env`, `.env.*` and `.envrc`; keys and certificates (`*.pem`, `*.key`,
+  `*.p12`, `*.pfx`, `*.p8`, `*.jks`) and the SSH private keys; and credential
+  files such as `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`,
+  `.vault-token`, `credentials`, `credentials.json`, `*_credentials.json`,
+  `service-account*.json`, `.aws/credentials`, `.docker/config.json`,
+  `.kube/config` and `.config/gcloud/application_default_credentials.json`. A
+  blocked file is refused by `repo.read` and `repo.stat`, and hidden from
+  `repo.list` and `repo.search`.
+- **`security.blocked_paths` only adds to that list.** It cannot remove a
+  built-in rule, and the [security model](docs/security.md) names every pattern.
 - **Reads are bounded** by `security.max_file_size`, and tool results by the
   agent budget, so no single call can fill the context window.
 - **No shell.** PawAgents never executes a command a model produced. The `git.*`
@@ -1045,7 +1076,9 @@ skip, so a green run never hides an unverified chain:
 | `PAWAGENTS_TEST_CODEX=1` | The Codex CLI accepts the registration and lists the server. |
 
 The model the review tests use defaults to the first model the server has
-installed; set `PAWAGENTS_TEST_MODEL` to choose one.
+installed; set `PAWAGENTS_TEST_MODEL` to choose one. [Acceptance
+status](#acceptance-status) records the last measured result of each gate,
+including the ones that could not run.
 
 The two chains the MVP promises are covered by these gates together:
 

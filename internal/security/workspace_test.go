@@ -352,6 +352,27 @@ func TestWorkspaceDefaultSensitivePaths(t *testing.T) {
 	}
 }
 
+// TestDefaultSensitivePathsAreDocumented keeps the deny list and its
+// documentation in step.
+//
+// The list is a promise the guard makes to a user, and a promise a user cannot
+// find is one they cannot rely on. A pattern added here and forgotten there
+// would leave the documentation quietly wrong, which is exactly how the
+// description of this policy drifted before.
+func TestDefaultSensitivePathsAreDocumented(t *testing.T) {
+	documented, err := os.ReadFile(filepath.Join("..", "..", "docs", "security.md"))
+	if err != nil {
+		t.Fatalf("cannot read the security documentation: %v", err)
+	}
+	text := string(documented)
+
+	for _, pattern := range DefaultBlockedPaths() {
+		if !strings.Contains(text, pattern) {
+			t.Errorf("%q is enforced by the guard but is not documented in docs/security.md", pattern)
+		}
+	}
+}
+
 func TestWorkspaceListsAndWalks(t *testing.T) {
 	workspace, root := newWorkspace(t, WorkspaceOptions{})
 	mustWrite(t, filepath.Join(root, ".git", "config"), "[core]\n")
